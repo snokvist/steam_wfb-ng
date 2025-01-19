@@ -3,7 +3,7 @@ fpv.sh have one pipeline with video only, and one with audio. I will add argumen
 Prepared for bidirectional tunnel, but not tested. Requires drivers and tx compatible wlan.
 
 Using aggregation and distributor options, compatible with openwrt and remote nodes, as well as local interfaces (add to config.cfg). final_cleanup.sh need to remove and readd the built in driver to work, if you are using Steamdeck OLED, you need to add your driver name to have network restored after FPV.
-Requires NOPASSWD sudo (Only do it if you understand it):
+Requires NOPASSWD sudo for tunnel to work and for wlan adapters to be initialized correctly. (Only do it if you understand it):
 echo "%wheel ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/wheel >/dev/null
 
 One-click installer will come later.

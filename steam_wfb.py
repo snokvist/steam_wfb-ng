@@ -531,7 +531,7 @@ def ncurses_main(stdscr):
     # 7. Restart NetworkManager at the end
     event_queue.put(("status", "[INFO] Final cleanup..."))
     try:
-        subprocess.run(["sudo", "./final_cleanup.sh"], check=False)
+        subprocess.run(["./final_cleanup.sh"], check=False)
         event_queue.put(("status", "[INFO] Final cleanup called"))
     except Exception as e:
         event_queue.put(("status", f"[ERROR] Error calling final cleanup: {e}"))

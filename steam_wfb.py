@@ -318,14 +318,14 @@ def ncurses_main(stdscr):
 
     # 3. Build the wfb_rx (video) command
     wfb_video_cmd_list = [
-        "/usr/bin/wfb_rx",
+        "./wfb_rx",
         "-a", "10000",
         "-p", "0",
         "-c", ip,
         "-u", port,
         "-K", "/etc/gs.key",
         "-R", "2097152",
-        "-l", "1000",
+        "-l", "3000",
         "-i", "7669206"
     ]
     wfb_video_thread = threading.Thread(
@@ -338,17 +338,17 @@ def ncurses_main(stdscr):
 
     # 4. Build new tunnel commands for wfb_rx + wfb_tx + wfb_tun
     tunnel_rx_cmd_list = [
-        "/usr/bin/wfb_rx",
+        "./wfb_rx",
         "-a", "10001",
         "-p", "32",
         "-u", "10002",
         "-K", tunnel_key,
         "-R", "2097152",
-        "-l", "1000",
+        "-l", "3000",
         "-i", "7669206"
     ]
     tunnel_tx_cmd_list = [
-        "/usr/bin/wfb_tx",
+        "./wfb_tx",
         "-d",         # run as daemon
         "-f", "data",
         "-p", "160",
@@ -365,12 +365,13 @@ def ncurses_main(stdscr):
         "-F", "0",
         "-i", "7669206",
         "-R", "2097152",
-        "-l", "1000",
+        "-l", "3000",
         "-C", "0",
         "127.0.0.1:11001"
     ]
     tunnel_tun_cmd_list = [
-        "/usr/bin/wfb_tun",
+        "sudo",
+        "./wfb_tun",
         "-a", "10.5.0.1/24",
         "-l", "10001",
         "-u", "10002",
@@ -528,12 +529,12 @@ def ncurses_main(stdscr):
                 proc.terminate()
 
     # 7. Restart NetworkManager at the end
-    event_queue.put(("status", "[INFO] Restarting NetworkManager..."))
+    event_queue.put(("status", "[INFO] Final cleanup..."))
     try:
-        subprocess.run(["systemctl", "restart", "NetworkManager"], check=False)
-        event_queue.put(("status", "[INFO] NetworkManager restarted."))
+        subprocess.run(["sudo", "./final_cleanup.sh"], check=False)
+        event_queue.put(("status", "[INFO] Final cleanup called"))
     except Exception as e:
-        event_queue.put(("status", f"[ERROR] Could not restart NetworkManager: {e}"))
+        event_queue.put(("status", f"[ERROR] Error calling final cleanup: {e}"))
 
     if CTRL_C_TRIGGERED:
         # Exit immediately if user pressed Ctrl+C

@@ -23,9 +23,9 @@ _cleanup() {
   fi
 
   # Reset interface to managed mode
-  ip link set dev "$WLAN_INTERFACE" down
-  iw "$WLAN_INTERFACE" set type managed
-  ip link set dev "$WLAN_INTERFACE" up
+  sudo ip link set dev "$WLAN_INTERFACE" down
+  sudo iw "$WLAN_INTERFACE" set type managed
+  sudo ip link set dev "$WLAN_INTERFACE" up
 
   exit 1
 }
@@ -34,27 +34,27 @@ trap _cleanup EXIT
 
 # --- General Setup ---
 
-iw reg set "$REGION"
+sudo iw reg set "$REGION"
 
 if command -v nmcli >/dev/null && ! nmcli device show "$WLAN_INTERFACE" | grep -q '(unmanaged)'; then
-  nmcli device set "$WLAN_INTERFACE" managed no
+  sudo nmcli device set "$WLAN_INTERFACE" managed no
   sleep 1
 fi
 
-ip link set "$WLAN_INTERFACE" down
-iw dev "$WLAN_INTERFACE" set monitor none
-iwconfig "$WLAN_INTERFACE" mode monitor
-ifconfig "$WLAN_INTERFACE" up
+sudo ip link set "$WLAN_INTERFACE" down
+sudo iw dev "$WLAN_INTERFACE" set monitor none
+sudo iwconfig "$WLAN_INTERFACE" mode monitor
+sudo ifconfig "$WLAN_INTERFACE" up
 echo "General interface init done"
 
 # For demonstration, keep all old "rx" logic under `MODE=rx`:
 if [ "$MODE" = "rx" ]; then
   echo "Configuring '$WLAN_INTERFACE' for RX mode..."
-  iw dev "$WLAN_INTERFACE" set channel "$CHANNEL" "$BANDWIDTH"
-  # iw dev "$WLAN_INTERFACE" set txpower fixed "$TX_POWER"
+  sudo iw dev "$WLAN_INTERFACE" set channel "$CHANNEL" "$BANDWIDTH"
+
 
   # Start wfb_rx
-  wfb_rx -f -c 127.0.0.1 -u 10000 -p 0  -i 7669206 -R 2097152 "$WLAN_INTERFACE" &
+  sudo wfb_rx -f -c 127.0.0.1 -u 10000 -p 0  -i 7669206 -R 2097152 "$WLAN_INTERFACE" &
   sleep 2
   echo "WFB-ng init done (RX mode)"
   wait -n
@@ -63,8 +63,9 @@ elif [ "$MODE" = "tx" ]; then
   # Placeholder for future TX logic
   echo "Configuring '$WLAN_INTERFACE' for TX mode..."
   echo "TODO: Insert TX-only commands here"
-  wfb_rx -f -c 127.0.0.1 -u 10001 -p 32 -i 7669206 -R 2097152 "$WLAN_INTERFACE" &
-  wfb_tx -I 11001 -R 2097152  "$WLAN_INTERFACE" &
+  sudo wfb_rx -f -c 127.0.0.1 -u 10001 -p 32 -i 7669206 -R 2097152 "$WLAN_INTERFACE" &
+  sudo wfb_tx -I 11001 -R 2097152  "$WLAN_INTERFACE" &
+  iw dev "$WLAN_INTERFACE" set txpower fixed "$TX_POWER"
   sleep 2
   echo "Done (TX mode)."
   wait -n
@@ -73,9 +74,10 @@ elif [ "$MODE" = "rx-tx" ]; then
   # Placeholder for combined RX-TX logic
   echo "Configuring '$WLAN_INTERFACE' for RX + TX mode..."
   echo "TODO: Insert combined logic here"
-  wfb_rx -f -c 127.0.0.1 -u 10000 -p 0  -i 7669206 -R 2097152 "$WLAN_INTERFACE" &
-  wfb_rx -f -c 127.0.0.1 -u 10001 -p 32 -i 7669206 -R 2097152 "$WLAN_INTERFACE" &
-  wfb_tx -I 11001 -R 2097152  "$WLAN_INTERFACE" &
+  sudo wfb_rx -f -c 127.0.0.1 -u 10000 -p 0  -i 7669206 -R 2097152 "$WLAN_INTERFACE" &
+  sudo wfb_rx -f -c 127.0.0.1 -u 10001 -p 32 -i 7669206 -R 2097152 "$WLAN_INTERFACE" &
+  sudo wfb_tx -I 11001 -R 2097152  "$WLAN_INTERFACE" &
+  iw dev "$WLAN_INTERFACE" set txpower fixed "$TX_POWER"
   sleep 2
   echo "Done (RX-TX mode)."
   wait -n

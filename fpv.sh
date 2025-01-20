@@ -17,9 +17,6 @@ echo "start: $(date)" >> /tmp/fpv.log
 onExit() {
     echo "stop: $(date)" >> /tmp/fpv.log
 
-    # Example of reloading a kernel module if needed:
-    # sudo modprobe -r rtw88_8822ce
-    # sudo modprobe rtw88_8822ce
 }
 
 trap "onExit" EXIT
@@ -46,7 +43,7 @@ function run_pipeline() {
 
     video+record)
         echo "Running VIDEO+RECORD pipeline"
-        gst-launch-1.0 \
+        gst-launch-1.0 -e\
             udpsrc port=5600 ! \
             tee name=videoTee \
                 videoTee. ! queue ! \
@@ -86,40 +83,33 @@ function run_pipeline() {
 
     video+audio+record)
         echo "Running VIDEO+AUDIO+RECORD pipeline"
-        gst-launch-1.0 \
+        gst-launch-1.0 -e \
             udpsrc port=5600 ! \
             tee name=t \
-                \
-                # Branch 1: Video decode & display
-                t. ! queue ! \
+            t. ! queue ! \
                 application/x-rtp,payload=97,clock-rate=90000,encoding-name=H265 ! \
-                rtpjitterbuffer latency=20 ! \
+                rtpjitterbuffer latency=1 ! \
                 rtph265depay ! \
                 vaapih265dec ! \
                 xvimagesink sync=false async=false \
-                \
-                # Branch 2: Audio decode & play
-                t. ! queue leaky=1 ! \
-                application/x-rtp,payload=98,encoding-name=OPUS ! \
-                rtpjitterbuffer latency=20 ! \
+            t. ! queue ! \
+                application/x-rtp,payload=98,clock-rate=48000,encoding-name=OPUS ! \
+                rtpjitterbuffer latency=1 ! \
                 rtpopusdepay ! \
                 opusdec ! \
                 audioconvert ! \
                 audioresample ! \
                 alsasink sync=false async=false \
-                \
-                # Branch 3: Video to record
-                t. ! queue ! \
+            t. ! queue ! \
                 application/x-rtp,payload=97,clock-rate=90000,encoding-name=H265 ! \
                 rtpjitterbuffer latency=20 ! \
                 rtph265depay ! \
-                h265parse ! \
-                mpegtsmux name=mux \
-                ! filesink location=/home/deck/Videos/record-$(date +%y%m%d_%H%M%S).tsn sync=false \
-                \
-                # Branch 4: Audio to record
-                t. ! queue ! \
-                application/x-rtp,payload=98,encoding-name=OPUS ! \
+                h265parse config-interval=1 ! \
+                video/x-h265,alignment=au,stream-format=byte-stream ! \
+                mpegtsmux name=mux ! \
+                filesink location="/home/deck/Videos/record-$(date +%y%m%d_%H%M%S).ts" sync=false \
+            t. ! queue ! \
+                application/x-rtp,payload=98,clock-rate=48000,encoding-name=OPUS ! \
                 rtpjitterbuffer latency=20 ! \
                 rtpopusdepay ! \
                 opusparse ! \

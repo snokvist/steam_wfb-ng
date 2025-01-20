@@ -22,12 +22,12 @@ TODO:
   - Finish up tunnel TX side
   - Only ONE TX allowed to avoid messy RSSI choice implementation.
   - Able to select either local or remote injector from config, if IP-address == remote, if empty == no tunnel, if wlanX == wlan_init.sh tx
-One-click installer
+  - One-click installer
  - Driver installs must be done by user on a need basis, but simplify? Ncurses menu selection?
  - Create steamdeck links: https://github.com/sonic2kk/steamtinkerlaunch
  - Create fpv.sh links for different pipelines (with script arguments) video/video-record/video-audio/video-audio-record. User can remove them if needed.
  - Add some nice pictures and names for the "Game" entries
-Divide top part and make some ASCII graphs (RSSI?) with link health colors.
-Ground side msposd rendering? (when tx works)
+ -Divide top part and make some ASCII graphs (RSSI?) with link health colors.
+- Ground side msposd rendering? (when tx works)
  - Not sure how steamdeck gamescope will handle cairo overlay on top of gstreamer
-Write a better readme
+- Write a better readme

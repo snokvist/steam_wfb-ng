@@ -10,9 +10,11 @@ import signal
 import sys
 import textwrap
 
-STOP_EVENT = threading.Event()       # Set when we want to stop all threads
-CHILD_PROCESSES = []                # Track all subprocess.Popen objects
-CTRL_C_TRIGGERED = False            # True if user pressed Ctrl+C
+from collections import OrderedDict
+
+STOP_EVENT = threading.Event()  # Set when we want to stop all threads
+CHILD_PROCESSES = []            # Track all subprocess.Popen objects
+CTRL_C_TRIGGERED = False        # True if user pressed Ctrl+C
 
 def handle_sigint(signum, frame):
     """Signal handler for Ctrl+C (SIGINT)."""
@@ -24,13 +26,14 @@ def handle_sigint(signum, frame):
 signal.signal(signal.SIGINT, handle_sigint)
 
 # --------------------------------------------------------------------------
-# Text-Wrapping Helper
+# Helpers
 # --------------------------------------------------------------------------
+
 def wrap_command(cmd_list, width):
     """
     Given a list of command arguments, returns a list of wrapped lines
     that fit within 'width' columns. We join the arguments with spaces
-    to get a single string, then wrap it.
+    then wrap it.
     """
     cmd_str = " ".join(cmd_list)
     return textwrap.wrap(cmd_str, width=width)
@@ -38,22 +41,22 @@ def wrap_command(cmd_list, width):
 def draw_window(win, header_lines, log_lines, max_height, max_width):
     """
     Draws a window with:
-      - A list of 'header_lines' at the top (wrapped),
-      - Followed by the last portion of 'log_lines' so they fit.
-    Both are wrapped within 'max_width' and truncated if they exceed 'max_height'.
+      - 'header_lines' at the top,
+      - Then the last portion of 'log_lines'.
+    Both are truncated to fit within 'max_height' lines, 'max_width' columns.
     """
     win.erase()
     win.border()
 
-    # First print the header lines
     row = 1
+    # Print header lines first
     for hline in header_lines:
         if row >= max_height - 1:
             break
         win.addstr(row, 1, hline)
         row += 1
 
-    # Now print the logs in the remaining space
+    # Remaining lines for logs
     leftover_lines = max_height - 1 - row
     slice_logs = log_lines[-leftover_lines:] if leftover_lines > 0 else []
     for log_line in slice_logs:
@@ -64,43 +67,102 @@ def draw_window(win, header_lines, log_lines, max_height, max_width):
 
     win.refresh()
 
+def clean_wfb_line(raw_line):
+    """
+    Merge stderr into stdout, so we only read from stdout. We want to:
+      1) Strip trailing whitespace
+      2) Replace tabs with single spaces
+      3) If the first token is purely digits, remove it (the 'timestamp')
+      4) Rejoin the remainder with single spaces
+    """
+    line = raw_line.strip().replace('\t', ' ')
+    parts = line.split()
+    if parts and parts[0].isdigit():
+        parts = parts[1:]
+    return ' '.join(parts)
+
 # --------------------------------------------------------------------------
-# Worker Functions
+# ASCII Chart for RSSI
+# --------------------------------------------------------------------------
+
+def generate_rssi_chart(rxant_dict, rssi_min, rssi_max):
+    """
+    For each unique ID in 'rxant_dict', we parse the latest line to find the avg_rssi.
+    Only show the most recent line for each ID (that's all we store).
+    Return a list of ASCII bar lines. For example:
+       c0a8013400000001: avg=-41 | ####
+    """
+    if not rxant_dict:
+        return ["No RX_ANT data yet..."]
+
+    lines = []
+    rng = float(rssi_max - rssi_min)
+    if rng < 1.0:
+        rng = 1.0  # avoid divide by zero
+
+    # We can sort by ID or by insertion order. Let's do sorted by ID for clarity
+    for wlan_id in sorted(rxant_dict.keys()):
+        entry = rxant_dict[wlan_id]
+        parts = entry.split()
+        # parts typically: ["RX_ANT","5805:2:20","c0a8013400000001","2811:-42:-41:-41:0:0:0"]
+        if len(parts) < 4:
+            lines.append(entry)
+            continue
+        # The ID is parts[2], the chunk with rssi is parts[3]
+        rssi_chunk = parts[3]
+        subparts = rssi_chunk.split(':')
+        if len(subparts) < 3:
+            lines.append(entry)
+            continue
+
+        try:
+            avg_rssi = float(subparts[2])  # the 'avg' is the 3rd field in "2811:-42:-41:-41..."
+        except ValueError:
+            lines.append(entry)
+            continue
+
+        # scale  => [0..1]
+        scale = (avg_rssi - rssi_min)/rng
+        scale = max(0.0, min(scale, 1.0))
+
+        bar_count = int(scale * 30)  # 0..10
+        bar = "#" * bar_count
+        line_text = f"{wlan_id}: avg={int(avg_rssi)} | {bar}"
+        lines.append(line_text)
+
+    return lines
+
+# --------------------------------------------------------------------------
+# Worker Threads (with stderr -> stdout merged)
 # --------------------------------------------------------------------------
 
 def wlan_worker(interface, tx_power, channel, region, bandwidth, mode, event_queue):
     """
     Runs wlan_init.sh <iface> <tx_power> <channel> <region> <bandwidth> <mode>.
-    Captures stdout/stderr, sends lines to event_queue under 'status'.
+    Merges stderr->stdout so we read from a single stream.
     """
     try:
         command_list = [
-            "bash",
-            "-c",
+            "bash", "-c",
             f"./wlan_init.sh {interface} {tx_power} {channel} {region} {bandwidth} {mode}"
         ]
         event_queue.put(("status", f"[STARTING] WLAN: {interface} (mode={mode})"))
 
-        process = subprocess.Popen(command_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        process = subprocess.Popen(
+            command_list,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # <== Merge stderr into stdout
+            text=True
+        )
         CHILD_PROCESSES.append(process)
 
-        # Read stdout
-        for line in process.stdout:
+        for raw_line in process.stdout:
             if STOP_EVENT.is_set():
                 process.terminate()
                 break
-            line = line.strip()
+            line = clean_wfb_line(raw_line)
             if line:
-                event_queue.put(("status", f"[STDOUT-{interface}] {line}"))
-
-        # Read stderr
-        for line in process.stderr:
-            if STOP_EVENT.is_set():
-                process.terminate()
-                break
-            line = line.strip()
-            if line:
-                event_queue.put(("status", f"[STDERR-{interface}] {line}"))
+                event_queue.put(("status", f"[{interface}] {line}"))
 
         return_code = process.wait()
         if return_code == 0:
@@ -111,141 +173,92 @@ def wlan_worker(interface, tx_power, channel, region, bandwidth, mode, event_que
     except Exception as e:
         event_queue.put(("status", f"[ERROR] WLAN: {interface} (mode={mode}) - {str(e)}"))
 
-def wfb_rx_worker(ip, port, event_queue, wfb_cmd_list):
+def wfb_rx_worker(command_list, event_queue, tag="wfb"):
     """
-    Worker for the "video" wfb_rx command (bottom-left logs).
-    Captures stdout/stderr, sends lines to event_queue under 'wfb'.
-    'wfb_cmd_list' is the final list of arguments (for display and debugging).
+    wfb_rx with merged stderr->stdout.
     """
     try:
-        event_queue.put(("wfb", "[STARTING] wfb_rx command (video)"))
+        event_queue.put((tag, f"[STARTING] {command_list[0]} command (tag={tag})"))
 
-        process = subprocess.Popen(wfb_cmd_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        process = subprocess.Popen(
+            command_list,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # merge
+            text=True
+        )
         CHILD_PROCESSES.append(process)
 
-        for line in process.stdout:
+        for raw_line in process.stdout:
             if STOP_EVENT.is_set():
                 process.terminate()
                 break
-            line = line.strip()
+            line = clean_wfb_line(raw_line)
             if line:
-                event_queue.put(("wfb", line))
-
-        for line in process.stderr:
-            if STOP_EVENT.is_set():
-                process.terminate()
-                break
-            line = line.strip()
-            if line:
-                event_queue.put(("wfb", f"[STDERR] {line}"))
+                event_queue.put((tag, line))
 
         return_code = process.wait()
         if return_code == 0:
-            event_queue.put(("wfb", "[COMPLETED] wfb_rx (video)"))
+            event_queue.put((tag, f"[COMPLETED] {command_list[0]}"))
         else:
-            event_queue.put(("wfb", f"[FAILED/TERMINATED] wfb_rx (video), code {return_code}"))
+            event_queue.put((tag, f"[FAILED/TERMINATED] {command_list[0]}, code {return_code}"))
 
     except Exception as e:
-        event_queue.put(("wfb", f"[ERROR] wfb_rx (video): {str(e)}"))
+        event_queue.put((tag, f"[ERROR] {command_list[0]}: {str(e)}"))
 
-def tunnel_rx_worker(key_path, event_queue, tunnel_rx_cmd_list):
+def wfb_tx_worker(command_list, event_queue, tag="tunnel"):
     """
-    Worker for the "tunnel" wfb_rx command (bottom-right logs).
-    Captures stdout/stderr, sends lines to event_queue under 'tunnel'.
+    wfb_tx with merged stderr->stdout.
     """
     try:
-        event_queue.put(("tunnel", "[STARTING] wfb_rx (tunnel)"))
+        event_queue.put((tag, f"[STARTING] {command_list[0]} (tag={tag})"))
 
-        process = subprocess.Popen(tunnel_rx_cmd_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        process = subprocess.Popen(
+            command_list,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # merge
+            text=True
+        )
         CHILD_PROCESSES.append(process)
 
-        for line in process.stdout:
+        for raw_line in process.stdout:
             if STOP_EVENT.is_set():
                 process.terminate()
                 break
-            line = line.strip()
+            line = clean_wfb_line(raw_line)
             if line:
-                event_queue.put(("tunnel", line))
-
-        for line in process.stderr:
-            if STOP_EVENT.is_set():
-                process.terminate()
-                break
-            line = line.strip()
-            if line:
-                event_queue.put(("tunnel", f"[STDERR] {line}"))
+                event_queue.put((tag, line))
 
         return_code = process.wait()
         if return_code == 0:
-            event_queue.put(("tunnel", "[COMPLETED] wfb_rx (tunnel)"))
+            event_queue.put((tag, f"[COMPLETED] {command_list[0]}"))
         else:
-            event_queue.put(("tunnel", f"[FAILED/TERMINATED] wfb_rx (tunnel), code {return_code}"))
+            event_queue.put((tag, f"[FAILED/TERMINATED] {command_list[0]}, code {return_code}"))
 
     except Exception as e:
-        event_queue.put(("tunnel", f"[ERROR] wfb_rx (tunnel): {str(e)}"))
+        event_queue.put((tag, f"[ERROR] {command_list[0]}: {str(e)}"))
 
-def tunnel_tx_worker(key_path, bandwidth, stbc, ldpc, mcs, fec_k, fec_n, fec_timeout, event_queue, tunnel_tx_cmd_list):
+def wfb_tun_worker(command_list, event_queue):
     """
-    Worker for the "tunnel" wfb_tx command (bottom-right logs).
-    Captures stdout/stderr, sends lines to event_queue under 'tunnel'.
-    """
-    try:
-        event_queue.put(("tunnel", "[STARTING] wfb_tx (tunnel)"))
-
-        process = subprocess.Popen(tunnel_tx_cmd_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        CHILD_PROCESSES.append(process)
-
-        for line in process.stdout:
-            if STOP_EVENT.is_set():
-                process.terminate()
-                break
-            line = line.strip()
-            if line:
-                event_queue.put(("tunnel", line))
-
-        for line in process.stderr:
-            if STOP_EVENT.is_set():
-                process.terminate()
-                break
-            line = line.strip()
-            if line:
-                event_queue.put(("tunnel", f"[STDERR] {line}"))
-
-        return_code = process.wait()
-        if return_code == 0:
-            event_queue.put(("tunnel", "[COMPLETED] wfb_tx (tunnel)"))
-        else:
-            event_queue.put(("tunnel", f"[FAILED/TERMINATED] wfb_tx (tunnel), code {return_code}"))
-
-    except Exception as e:
-        event_queue.put(("tunnel", f"[ERROR] wfb_tx (tunnel): {str(e)}"))
-
-def tunnel_tun_worker(agg_timeout, event_queue, tunnel_tun_cmd_list):
-    """
-    Worker for wfb_tun, controlling the tunnel interface.
-    Captures stdout/stderr, sends lines to event_queue under 'tunnel'.
+    wfb_tun with merged stderr->stdout.
     """
     try:
         event_queue.put(("tunnel", "[STARTING] wfb_tun"))
 
-        process = subprocess.Popen(tunnel_tun_cmd_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        process = subprocess.Popen(
+            command_list,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # merge
+            text=True
+        )
         CHILD_PROCESSES.append(process)
 
-        for line in process.stdout:
+        for raw_line in process.stdout:
             if STOP_EVENT.is_set():
                 process.terminate()
                 break
-            line = line.strip()
+            line = clean_wfb_line(raw_line)
             if line:
                 event_queue.put(("tunnel", line))
-
-        for line in process.stderr:
-            if STOP_EVENT.is_set():
-                process.terminate()
-                break
-            line = line.strip()
-            if line:
-                event_queue.put(("tunnel", f"[STDERR] {line}"))
 
         return_code = process.wait()
         if return_code == 0:
@@ -256,7 +269,6 @@ def tunnel_tun_worker(agg_timeout, event_queue, tunnel_tun_cmd_list):
     except Exception as e:
         event_queue.put(("tunnel", f"[ERROR] wfb_tun: {str(e)}"))
 
-
 # --------------------------------------------------------------------------
 # ncurses Main
 # --------------------------------------------------------------------------
@@ -266,12 +278,15 @@ def ncurses_main(stdscr):
     config = configparser.ConfigParser()
     config.read("config.cfg")
 
+    # Common stuff + rssi_min/rssi_max for ASCII bar scale
     ip = config.get("common", "ip_address", fallback="192.168.1.49")
     port = config.get("common", "port", fallback="5600")
     region = config.get("common", "region", fallback="00")
+    rssi_min = config.getint("common", "rssi_min", fallback=-80)
+    rssi_max = config.getint("common", "rssi_max", fallback=-20)
 
     rx_wlans_str = config.get("wlans", "rx_wlans", fallback="").strip()
-    tx_wlan_str  = config.get("wlans", "tx_wlan",  fallback="").strip()
+    tx_wlans_str = config.get("wlans", "tx_wlan",  fallback="").strip()
     tx_power     = config.get("wlans", "tx_power", fallback="100")
     channel      = config.get("wlans", "channel",  fallback="161")
     bandwidth    = config.get("wlans", "bandwidth",fallback="HT20")
@@ -286,28 +301,55 @@ def ncurses_main(stdscr):
     tunnel_fec_n    = config.get("tunnel", "fec_n", fallback="2")
     tunnel_fec_time = config.get("tunnel", "fec_timeout", fallback="0")
     tunnel_agg_time = config.get("tunnel", "agg_timeout", fallback="5")
+    remote_injector = config.get("tunnel", "remote_injector", fallback="")
+    log_interval    = config.get("tunnel", "log_interval", fallback="2000")
 
+    # 2. Parse WLANS
     rx_wlans = rx_wlans_str.split() if rx_wlans_str else []
-    tx_wlans = tx_wlan_str.split()  if tx_wlan_str  else []
-    all_ifaces = set(rx_wlans + tx_wlans)
+    all_tx_wlans = tx_wlans_str.split() if tx_wlans_str else []
 
     event_queue = queue.Queue()
     threads = []
 
-    # Debug info in 'status'
+    # Debug info
     event_queue.put(("status", f"[DEBUG] rx_wlans = {rx_wlans}"))
-    event_queue.put(("status", f"[DEBUG] tx_wlans = {tx_wlans}"))
-    event_queue.put(("status", f"[DEBUG] all_ifaces = {list(all_ifaces)}"))
+    event_queue.put(("status", f"[DEBUG] tx_wlans (all) = {all_tx_wlans}"))
+    event_queue.put(("status", f"[DEBUG] remote_injector = '{remote_injector}'"))
+    event_queue.put(("status", f"[DEBUG] log_interval = {log_interval}"))
+    event_queue.put(("status", f"[DEBUG] rssi_min={rssi_min}, rssi_max={rssi_max}"))
 
-    # 2. Start worker threads for each WLAN
+    # 3. Determine actual TX adapter
+    tx_adapter = None
+    if remote_injector.strip():
+        event_queue.put(("status", "[INFO] remote_injector set -> ignoring tx_wlan entirely"))
+    else:
+        if len(all_tx_wlans) > 0:
+            tx_adapter = all_tx_wlans[0]
+            event_queue.put(("status", f"[INFO] Only first TX adapter used => {tx_adapter}"))
+
+    # 4. Build set of all ifaces
+    if tx_adapter:
+        all_ifaces = set(rx_wlans + [tx_adapter])
+    else:
+        all_ifaces = set(rx_wlans)
+
+    event_queue.put(("status", f"[DEBUG] final all_ifaces = {list(all_ifaces)}"))
+
+    # 5. Determine mode for each interface
+    def get_mode(iface):
+        in_rx = iface in rx_wlans
+        is_tx = (iface == tx_adapter)
+        if in_rx and is_tx:
+            return "rx-tx"
+        elif in_rx:
+            return "rx"
+        elif is_tx:
+            return "tx"
+        return "unknown"
+
+    # 6. Launch wlan_init.sh threads
     for iface in all_ifaces:
-        if iface in rx_wlans and iface in tx_wlans:
-            mode = "rx-tx"
-        elif iface in rx_wlans:
-            mode = "rx"
-        else:
-            mode = "tx"
-
+        mode = get_mode(iface)
         t = threading.Thread(
             target=wlan_worker,
             args=(iface, tx_power, channel, region, bandwidth, mode, event_queue),
@@ -316,8 +358,8 @@ def ncurses_main(stdscr):
         t.start()
         threads.append(t)
 
-    # 3. Build the wfb_rx (video) command
-    wfb_video_cmd_list = [
+    # 7. wfb_rx for "video"
+    wfb_video_cmd = [
         "./wfb_rx",
         "-a", "10000",
         "-p", "0",
@@ -325,31 +367,34 @@ def ncurses_main(stdscr):
         "-u", port,
         "-K", "/etc/gs.key",
         "-R", "2097152",
-        "-l", "3000",
+        "-l", str(log_interval),
         "-i", "7669206"
     ]
     wfb_video_thread = threading.Thread(
         target=wfb_rx_worker,
-        args=(ip, port, event_queue, wfb_video_cmd_list),
+        args=(wfb_video_cmd, event_queue, "wfb"),
         daemon=True
     )
     wfb_video_thread.start()
     threads.append(wfb_video_thread)
 
-    # 4. Build new tunnel commands for wfb_rx + wfb_tx + wfb_tun
-    tunnel_rx_cmd_list = [
+    # 8. Tunnel wfb_rx / wfb_tx / wfb_tun
+    default_injector = "127.0.0.1:11001"
+    final_injector = remote_injector.strip() if remote_injector.strip() else default_injector
+
+    tunnel_rx_cmd = [
         "./wfb_rx",
         "-a", "10001",
         "-p", "32",
-        "-u", "10002",
+        "-u", "54682",
         "-K", tunnel_key,
         "-R", "2097152",
-        "-l", "3000",
+        "-l", str(log_interval),
         "-i", "7669206"
     ]
-    tunnel_tx_cmd_list = [
+    tunnel_tx_cmd = [
         "./wfb_tx",
-        "-d",         # run as daemon
+        "-d",
         "-f", "data",
         "-p", "160",
         "-u", "0",
@@ -365,97 +410,106 @@ def ncurses_main(stdscr):
         "-F", "0",
         "-i", "7669206",
         "-R", "2097152",
-        "-l", "3000",
+        "-l", str(log_interval),
         "-C", "0",
-        "127.0.0.1:11001"
+        final_injector
     ]
-    tunnel_tun_cmd_list = [
-        "sudo",
-        "./wfb_tun",
+    tunnel_tun_cmd = [
+        "sudo", "./wfb_tun",
         "-a", "10.5.0.1/24",
         "-l", "10001",
         "-u", "10002",
         "-T", str(tunnel_agg_time)
-        # Could add -t tun_name, etc. if desired
     ]
 
-    tunnel_rx_t = threading.Thread(
-        target=tunnel_rx_worker,
-        args=(tunnel_key, event_queue, tunnel_rx_cmd_list),
+    t_rx = threading.Thread(
+        target=wfb_rx_worker,
+        args=(tunnel_rx_cmd, event_queue, "tunnel"),
         daemon=True
     )
-    tunnel_rx_t.start()
-    threads.append(tunnel_rx_t)
+    t_rx.start()
+    threads.append(t_rx)
 
-    tunnel_tx_t = threading.Thread(
-        target=tunnel_tx_worker,
-        args=(tunnel_key, tunnel_bw, tunnel_stbc, tunnel_ldpc, tunnel_mcs,
-              tunnel_fec_k, tunnel_fec_n, tunnel_fec_time, event_queue, tunnel_tx_cmd_list),
+    t_tx = threading.Thread(
+        target=wfb_tx_worker,
+        args=(tunnel_tx_cmd, event_queue, "tunnel"),
         daemon=True
     )
-    tunnel_tx_t.start()
-    threads.append(tunnel_tx_t)
+    t_tx.start()
+    threads.append(t_tx)
 
-    tunnel_tun_t = threading.Thread(
-        target=tunnel_tun_worker,
-        args=(tunnel_agg_time, event_queue, tunnel_tun_cmd_list),
+    t_tun = threading.Thread(
+        target=wfb_tun_worker,
+        args=(tunnel_tun_cmd, event_queue),
         daemon=True
     )
-    tunnel_tun_t.start()
-    threads.append(tunnel_tun_t)
+    t_tun.start()
+    threads.append(t_tun)
 
-    # 5. Setup curses windows
+    # ----------------------------------------------------------------------
+    # 9. Prepare curses windows
     stdscr.clear()
     height, width = stdscr.getmaxyx()
 
-    # The top half for status logs
+    # We'll split top half into (status_win, stats_win),
+    # bottom half into (wfb_win, tunnel_win)
     half_height = height // 2
-    status_win = curses.newwin(half_height, width, 0, 0)
+    top_left_width = width // 2
+    top_right_width = width - top_left_width
+
+    status_win = curses.newwin(half_height, top_left_width, 0, 0)
     status_win.nodelay(True)
     status_win.scrollok(True)
 
-    # The bottom half is split into two columns:
+    stats_win = curses.newwin(half_height, top_right_width, 0, top_left_width)
+    stats_win.nodelay(True)
+    stats_win.scrollok(True)
+
     bottom_height = height - half_height
     wfb_width = width // 2
-
-    # Bottom-left: wfb logs (video)
     wfb_win = curses.newwin(bottom_height, wfb_width, half_height, 0)
     wfb_win.nodelay(True)
     wfb_win.scrollok(True)
 
-    # Bottom-right: tunnel logs
     tunnel_width = width - wfb_width
     tunnel_win = curses.newwin(bottom_height, tunnel_width, half_height, wfb_width)
     tunnel_win.nodelay(True)
     tunnel_win.scrollok(True)
 
-    # Prepare log buffers
+    # Buffers for logs
     status_logs = []
+    stats_logs = []
     wfb_logs = []
     tunnel_logs = []
 
-    # Headers for wfb (video) window
+    # Instead of storing 20 lines, we store a dictionary of the latest line per ID
+    wfb_rxant_dict = {}  # key=unique ID, value=the entire line
+
+    # Window headers
+    status_header = []
+    stats_header  = ["[ASCII RSSI Chart for video feed]"]
+
     wfb_header_lines = ["[VIDEO RX COMMAND]:"]
-    wfb_header_lines += wrap_command(wfb_video_cmd_list, wfb_width - 2)
+    wfb_header_lines += wrap_command(wfb_video_cmd, wfb_width - 2)
 
-    # Headers for tunnel window: RX, TX, TUN
     tunnel_header_lines = ["[TUNNEL RX COMMAND]:"]
-    tunnel_header_lines += wrap_command(tunnel_rx_cmd_list, tunnel_width - 2)
-    #tunnel_header_lines.append("")
+    tunnel_header_lines += wrap_command(tunnel_rx_cmd, tunnel_width - 2)
     tunnel_header_lines.append("[TUNNEL TX COMMAND]:")
-    tunnel_header_lines += wrap_command(tunnel_tx_cmd_list, tunnel_width - 2)
-    #tunnel_header_lines.append("")
+    tunnel_header_lines += wrap_command(tunnel_tx_cmd, tunnel_width - 2)
     tunnel_header_lines.append("[TUNNEL TUN COMMAND]:")
-    tunnel_header_lines += wrap_command(tunnel_tun_cmd_list, tunnel_width - 2)
+    tunnel_header_lines += wrap_command(tunnel_tun_cmd, tunnel_width - 2)
 
+    # Some max lines for each window
     MAX_STATUS_LINES = half_height - 2
+    MAX_STATS_LINES  = half_height - 2
     MAX_WFB_LINES    = bottom_height - 2
     MAX_TUNNEL_LINES = bottom_height - 2
 
     curses.curs_set(0)
     stdscr.nodelay(True)
 
-    # 6. Main UI loop
+    # ----------------------------------------------------------------------
+    # 10. Main UI loop
     try:
         while True:
             if STOP_EVENT.is_set():
@@ -478,40 +532,75 @@ def ncurses_main(stdscr):
                     status_logs.append(text)
                     if len(status_logs) > 1000:
                         status_logs.pop(0)
+
                 elif kind == "wfb":
                     wfb_logs.append(text)
                     if len(wfb_logs) > 1000:
                         wfb_logs.pop(0)
+
+                    parts = text.split()
+                    if len(parts) >= 4 and parts[0] == "RX_ANT":
+                        # ID is parts[2], the rssi chunk is parts[3], store the entire line
+                        wlan_id = parts[2]
+                        wfb_rxant_dict[wlan_id] = text
+
                 elif kind == "tunnel":
                     tunnel_logs.append(text)
                     if len(tunnel_logs) > 1000:
                         tunnel_logs.pop(0)
+                    # If you also want to handle RX_ANT for tunnel, do similarly:
+                    # parts = text.split()
+                    # if len(parts) >= 4 and parts[0] == "RX_ANT":
+                    #     ...
+                    #     store in a separate dictionary
 
-            # Redraw top (status) window
+            # Redraw top-left (status)
             status_win.erase()
             status_win.border()
-            slice_status = status_logs[-MAX_STATUS_LINES:]
-            for idx, line in enumerate(slice_status):
-                status_win.addstr(idx + 1, 1, line)
+            leftover_status_lines = MAX_STATUS_LINES - 1 - len(status_header)
+            slice_status = status_logs[-leftover_status_lines:] if leftover_status_lines > 0 else []
+            row = 1
+            for hl in status_header:
+                if row >= MAX_STATUS_LINES:
+                    break
+                status_win.addstr(row, 1, hl)
+                row += 1
+            for line in slice_status:
+                if row >= MAX_STATUS_LINES:
+                    break
+                status_win.addstr(row, 1, line)
+                row += 1
             status_win.refresh()
 
-            # Draw bottom-left (video wfb) with header + logs
-            draw_window(
-                wfb_win,
-                wfb_header_lines,
-                wfb_logs,
-                bottom_height,
-                wfb_width
-            )
+            # Redraw top-right (stats)
+            stats_win.erase()
+            stats_win.border()
+            # We'll generate ASCII bars from the dictionary wfb_rxant_dict
+            ascii_bars = generate_rssi_chart(wfb_rxant_dict, rssi_min, rssi_max)
+            leftover_stats_lines = MAX_STATS_LINES - 1 - len(stats_header)
 
-            # Draw bottom-right (tunnel) with header + logs
-            draw_window(
-                tunnel_win,
-                tunnel_header_lines,
-                tunnel_logs,
-                bottom_height,
-                tunnel_width
-            )
+            row = 1
+            for hl in stats_header:
+                if row >= MAX_STATS_LINES:
+                    break
+                stats_win.addstr(row, 1, hl)
+                row += 1
+
+            # Show the ASCII bars
+            relevant_bars = ascii_bars[-leftover_stats_lines:] if leftover_stats_lines > 0 else []
+            for bar_line in relevant_bars:
+                if row >= MAX_STATS_LINES:
+                    break
+                stats_win.addstr(row, 1, bar_line)
+                row += 1
+
+            stats_win.refresh()
+
+            # Bottom-left: video (wfb)
+            draw_window(wfb_win, wfb_header_lines, wfb_logs, bottom_height, wfb_width)
+
+            # Bottom-right: tunnel
+            draw_window(tunnel_win, tunnel_header_lines, tunnel_logs, bottom_height, tunnel_width)
 
             # If no threads left & queue empty -> done
             if not alive_threads and event_queue.empty():
@@ -528,13 +617,14 @@ def ncurses_main(stdscr):
             if proc.poll() is None:
                 proc.terminate()
 
-    # 7. Restart NetworkManager at the end
-    event_queue.put(("status", "[INFO] Final cleanup..."))
+    # ----------------------------------------------------------------------
+    # 11. Final cleanup step
+    event_queue.put(("status", "[INFO] Executing final cleanup..."))
     try:
-        subprocess.run(["./final_cleanup.sh"], check=False)
-        event_queue.put(("status", "[INFO] Final cleanup called"))
+        subprocess.run(["sudo", "./final_cleanup.sh"], check=False)
+        event_queue.put(("status", "[INFO] Final cleanup completed."))
     except Exception as e:
-        event_queue.put(("status", f"[ERROR] Error calling final cleanup: {e}"))
+        event_queue.put(("status", f"[ERROR] Could not complete the final cleanup: {e}"))
 
     if CTRL_C_TRIGGERED:
         # Exit immediately if user pressed Ctrl+C

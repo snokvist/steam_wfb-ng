@@ -19,7 +19,7 @@ Steam shortcuts:
 
 TODO:
 
-Finish up tunnel TX side
+  - Finish up tunnel TX side
   - Only ONE TX allowed to avoid messy RSSI choice implementation.
   - Able to select either local or remote injector from config, if IP-address == remote, if empty == no tunnel, if wlanX == wlan_init.sh tx
 One-click installer

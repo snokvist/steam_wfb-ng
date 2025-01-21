@@ -358,9 +358,9 @@ def ncurses_main(stdscr):
     tx_power     = config.get("wlans", "tx_power", fallback="100")
     channel      = config.get("wlans", "channel",  fallback="161")
     bandwidth    = config.get("wlans", "bandwidth",fallback="HT20")
+    key_path      = config.get("common", "key_path", fallback="/etc/gs.key")
 
     # Tunnel config
-    tunnel_key      = config.get("tunnel", "key_path", fallback="/etc/gs.key")
     tunnel_bw       = config.get("tunnel", "bandwidth", fallback="20")
     tunnel_stbc     = config.get("tunnel", "stbc", fallback="1")
     tunnel_ldpc     = config.get("tunnel", "ldpc", fallback="0")
@@ -455,7 +455,7 @@ def ncurses_main(stdscr):
         "-a", "10001",
         "-p", "32",
         "-u", "54682",
-        "-K", tunnel_key,
+        "-K", key_path,
         "-R", "2097152",
         "-l", str(log_interval),
         "-i", "7669206"
@@ -466,7 +466,7 @@ def ncurses_main(stdscr):
         "-f", "data",
         "-p", "160",
         "-u", "0",
-        "-K", tunnel_key,
+        "-K", key_path,
         "-B", str(tunnel_bw),
         "-G", "long",
         "-S", str(tunnel_stbc),

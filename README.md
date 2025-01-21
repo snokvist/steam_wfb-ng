@@ -6,28 +6,19 @@ Using aggregation and distributor options, compatible with openwrt and remote no
 Requires NOPASSWD sudo for tunnel to work and for wlan adapters to be initialized correctly. (Only do it if you understand it):
 echo "%wheel ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/wheel >/dev/null
 
-One-click installer will come later.
-
-Steam shortcuts:
-/bin/konsole
-/home/deck/steam_wfb-ng/
---profile steam_wfb -e ./steam_wfb.py
-
-"/home/deck/steam_wfb-ng/fpv.sh"
-/home/deck/steam_wfb-ng/
-
 
 TODO:
- - fix steam_wfb-ng console size, use xterm instead of konsole? "konsole -p 'TerminalColumns=100' -p 'TerminalRows=42' -geometry +0-30" vs "xterm -geometry 100x44+0-30."
+ - fix steam_wfb-ng console size, use xterm instead of konsole? "konsole -p 'TerminalColumns=100' -p 'TerminalRows=42' -geometry +0-30" vs "xterm -geometry 100x44+0-30."OK
   - Finish up tunnel TX side
   - Only ONE TX allowed to avoid messy RSSI choice implementation.
   - Able to select either local or remote injector from config, if IP-address == remote, if empty == no tunnel, if wlanX == wlan_init.sh tx
-  - One-click installer
+  - One-click installer  OK for now
  - Driver installs must be done by user on a need basis, but simplify? Ncurses menu selection?
- - Create steamdeck links: https://github.com/sonic2kk/steamtinkerlaunch
- - Create fpv.sh links for different pipelines (with script arguments) video/video-record/video-audio/video-audio-record. User can remove them if needed.
+ - Create steamdeck links: https://github.com/sonic2kk/steamtinkerlaunch OK
+ - Create fpv.sh links for different pipelines (with script arguments) video/video-record/video-audio/video-audio-record. User can remove them if needed. OK
  - Add some nice pictures and names for the "Game" entries
- -Divide top part and make some ASCII graphs (RSSI?) with link health colors.
+ -Divide top part and make some ASCII graphs (RSSI?) with link health colors. OK
 - Ground side msposd rendering? (when tx works)
  - Not sure how steamdeck gamescope will handle cairo overlay on top of gstreamer
 - Write a better readme
+add fec_rec and lost in graphs

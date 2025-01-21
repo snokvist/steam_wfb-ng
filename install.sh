@@ -68,7 +68,6 @@ else
   exit 1
 fi
 
-
 # Ask user whether to install Steam shortcuts
 read -p "Do you want to install Steam shortcuts for the application? (y/n): " install_shortcuts
 if [[ "$install_shortcuts" == "y" ]]; then
@@ -88,7 +87,7 @@ if [[ "$install_shortcuts" == "y" ]]; then
     echo "Failed to install SteamTinkerLaunch system-wide. Exiting."
     exit 1
   fi
-  sudo -u deck steamtinkerlaunch compat add
+  sudo -u deck steamtinkerlaunch compat add >/dev/null
 
   # Set language to English automatically
   echo "Setting language to English..."
@@ -105,11 +104,12 @@ if [[ "$install_shortcuts" == "y" ]]; then
 
   sleep 2
 
-  echo "Adding Steam shortcuts for fpv.sh..."
-  sudo -u deck steamtinkerlaunch addnonsteamgame --appname="Steam WFB_NG Terminal" --exepath="home/deck/steam_wfb-ng/terminal.sh" --startdir="/home/deck/steam_wfb-ng/" --launchoptions="-p 'TerminalColumns=100' -p 'TerminalRows=42' -e ./steam_wfb.py"
-  sudo -u deck steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video+Record" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video+record"
-  sudo -u deck steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video+Audio" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video+audio"
-  sudo -u deck steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video+Audio+Record" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video+audio+record"
+  echo "Adding Steam shortcuts..."
+  sudo -u deck steamtinkerlaunch addnonsteamgame --appname="Steam WFB_NG Terminal" --exepath="/home/deck/steam_wfb-ng/terminal.sh" --launchoptions="" >/dev/null
+  sudo -u deck steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video only" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video" >/dev/null
+  sudo -u deck steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video+Record" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video+record" >/dev/null
+  sudo -u deck steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video+Audio" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video+audio" >/dev/null
+  sudo -u deck steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video+Audio+Record" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video+audio+record" >/dev/null
 
   sleep 2
 
@@ -120,4 +120,3 @@ fi
 
 # Final instructions
 echo -e "\nSetup complete! Please restart your Steam Deck to apply sudoers changes."
-echo -e "\nEdit config.cfg for your system parameters."

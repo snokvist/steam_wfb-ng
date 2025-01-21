@@ -60,7 +60,7 @@ fi
 
 # Make necessary files executable
 echo "Making application files executable..."
-chmod +x final_cleanup.sh fpv.sh steam_wfb.py wfb_keygen wfb_rx wfb_tun wfb_tx wfb_tx_cmd wlan_init.sh
+chmod +x terminal.sh final_cleanup.sh fpv.sh steam_wfb.py wfb_keygen wfb_rx wfb_tun wfb_tx wfb_tx_cmd wlan_init.sh
 if [[ $? -eq 0 ]]; then
   echo "Files made executable successfully."
 else

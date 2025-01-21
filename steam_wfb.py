@@ -24,7 +24,7 @@ def handle_sigint(signum, frame):
 signal.signal(signal.SIGINT, handle_sigint)
 
 # --------------------------------------------------------------------------
-# Wrapping / Cleaning Helpers
+# Wrapping / Drawing Helpers
 # --------------------------------------------------------------------------
 
 def wrap_command(cmd_list, width):
@@ -65,44 +65,47 @@ def draw_window(win, header_lines, log_lines, max_height, max_width):
 
     win.refresh()
 
+# --------------------------------------------------------------------------
+# Custom Parsing for Video Lines
+# --------------------------------------------------------------------------
+
+def parse_video_line(raw_line: str) -> str:
+    """
+    For the "video" feed:
+      - If the line begins (after optional timestamp) with "RX_ANT" or "PKT",
+        then remove the first numeric token if it exists,
+        AND replace any tabs with a single space.
+      - Otherwise, leave line as-is (just strip trailing newlines).
+    """
+    # 1. Strip trailing newlines only
+    line = raw_line.rstrip('\r\n')
+
+    # 2. Split the first two tokens to see if the second is "RX_ANT"/"PKT"
+    parts = line.split(None, 2)  # up to 3 chunks
+    if len(parts) < 2:
+        return line  # nothing to do
+
+    # If second token is "RX_ANT" or "PKT" and first token is digits => remove first token
+    # then also replace tabs with single spaces
+    if parts[1] in ["RX_ANT", "PKT"] and parts[0].isdigit():
+        # remove parts[0]
+        if len(parts) == 3:
+            new_line = parts[1] + " " + parts[2]
+        else:
+            new_line = parts[1]
+        # Now remove any tabs
+        new_line = new_line.replace('\t', ' ')
+        return new_line
+    else:
+        # If it doesn't match, keep the line intact
+        return line
+
 def clean_line_keep_timestamp(line: str) -> str:
     """
-    Default: just strip trailing whitespace. Keep the entire line intact otherwise.
+    For non-video (or non-RX_ANT/PKT) lines, we keep them as is,
+    except we strip trailing newlines for cleanliness.
     """
-    return line.rstrip('\n\r')
-
-def clean_line_remove_timestamp(line: str) -> str:
-    """
-    If first token is purely digits, remove it.
-    (Used for lines that start with 'RX_ANT' or 'PKT'.)
-    """
-    tmp = line.strip()
-    parts = tmp.split()
-    if len(parts) > 1 and parts[0].isdigit():
-        # remove the first token
-        return " ".join(parts[1:])
-    else:
-        return tmp
-
-def parse_video_line(line: str) -> str:
-    """
-    In the video feed, only remove the timestamp if the line actually starts with "RX_ANT" or "PKT".
-    Otherwise keep the line as-is.
-    """
-    tmp = line.strip()
-    # Quick check:
-    # If after removing leading digits the next token is "RX_ANT" or "PKT", we remove that digit token.
-    parts = tmp.split(None, 2)  # split into at most 3 tokens
-    if len(parts) >= 2:
-        # If second token is "RX_ANT" or "PKT" and first token is digits -> remove
-        if parts[1] in ["RX_ANT", "PKT"] and parts[0].isdigit():
-            # Rejoin the rest
-            return parts[1] + (" " + parts[2] if len(parts) == 3 else "")
-        else:
-            # Otherwise keep line as is
-            return tmp
-    else:
-        return tmp
+    return line.rstrip('\r\n')
 
 # --------------------------------------------------------------------------
 # ASCII Chart Helpers
@@ -113,9 +116,8 @@ def get_rssi_color(avg_rssi, color_pairs):
     Return a curses color attribute based on avg_rssi:
       >= -50 => green
       >= -60 => yellow
-      >= -70 => magenta (like orange)
+      >= -70 => magenta (orange)
       else   => red
-    color_pairs is a dict like {"green": curses.color_pair(1), ...}
     """
     if avg_rssi >= -50:
         return color_pairs["green"]
@@ -128,9 +130,8 @@ def get_rssi_color(avg_rssi, color_pairs):
 
 def generate_rssi_chart(wfb_rxant_dict, rssi_min, rssi_max):
     """
-    Build a list of (text, avg_rssi) for each unique ID in wfb_rxant_dict.
-    We'll color the entire line based on avg_rssi in the drawing phase.
-    Format: "c0a8013400000001: avg=-41 | ####"
+    Build a list of (line_text, avg_rssi) for each unique ID in wfb_rxant_dict,
+    sorted descending by avg_rssi. line_text might be "c0a8013400000001: avg=-41 | ####"
     """
     if not wfb_rxant_dict:
         return [("No RX_ANT data yet...", 0)]
@@ -140,16 +141,15 @@ def generate_rssi_chart(wfb_rxant_dict, rssi_min, rssi_max):
     if rng < 1.0:
         rng = 1.0
 
-    # Sort by strongest signal first => we parse each line's avg and sort descending
-    # We'll build a small list of (wlan_id, avg_rssi, text)
+    # We'll gather items
     items = []
     for wlan_id, entry in wfb_rxant_dict.items():
         parts = entry.split()
-        # Example: ["RX_ANT","5805:2:20","c0a8013400000001","2811:-42:-41:-41:0:0:0"]
+        # e.g. ["RX_ANT","5805:2:20","c0a8013400000001","2811:-42:-41:-41:0:0:0"]
         if len(parts) < 4:
             items.append((wlan_id, -9999, entry))
             continue
-        chunk = parts[3]  # "2811:-42:-41:-41:0:0:0"
+        chunk = parts[3]  # the "2811:-42:-41:-41:..." portion
         sub = chunk.split(':')
         if len(sub) < 3:
             items.append((wlan_id, -9999, entry))
@@ -160,35 +160,35 @@ def generate_rssi_chart(wfb_rxant_dict, rssi_min, rssi_max):
             avg_rssi = -9999
         items.append((wlan_id, avg_rssi, entry))
 
-    # Now sort by avg_rssi descending
+    # Sort descending by avg_rssi
     items.sort(key=lambda x: x[1], reverse=True)
 
     for wlan_id, avg_rssi, entry in items:
-        if avg_rssi < -200:  # invalid data
+        if avg_rssi < -200:  # invalid
             lines.append((f"{wlan_id}: ???", avg_rssi))
             continue
         scale = (avg_rssi - rssi_min)/rng
         scale = max(0.0, min(scale, 1.0))
-        bar_count = int(scale * 35)
+        bar_count = int(scale * 10)
         bar_str = "#" * bar_count
         line_str = f"{wlan_id}: avg={int(avg_rssi)} | {bar_str}"
         lines.append((line_str, avg_rssi))
+
     return lines
 
 # --------------------------------------------------------------------------
-# Worker Functions
+# Worker Functions (stderr -> stdout merged)
 # --------------------------------------------------------------------------
 
 def wlan_worker(interface, tx_power, channel, region, bandwidth, mode, event_queue):
     """
     Runs wlan_init.sh <iface> <tx_power> <channel> <region> <bandwidth> <mode>,
-    merging stderr->stdout. We pass every line to 'status' with minimal changes.
+    merging stderr->stdout. We pass every line to 'status' basically unchanged.
     """
     try:
-        command_list = [
-            "bash", "-c",
-            f"./wlan_init.sh {interface} {tx_power} {channel} {region} {bandwidth} {mode}"
-        ]
+        cmd = f"./wlan_init.sh {interface} {tx_power} {channel} {region} {bandwidth} {mode}"
+        command_list = ["bash", "-c", cmd]
+
         event_queue.put(("status", f"[STARTING] WLAN: {interface} (mode={mode})"))
 
         process = subprocess.Popen(
@@ -219,8 +219,9 @@ def wlan_worker(interface, tx_power, channel, region, bandwidth, mode, event_que
 def wfb_rx_worker(command_list, event_queue, tag="wfb"):
     """
     wfb_rx with merged stderr->stdout.
-    In the 'video' feed, only remove timestamp if line starts with 'RX_ANT' or 'PKT',
-    otherwise keep as-is.
+    In the "video" feed (tag="wfb"), we parse lines with parse_video_line,
+    removing tabs & first numeric token if "RX_ANT"/"PKT".
+    For other lines, we keep them as is.
     """
     try:
         event_queue.put((tag, f"[STARTING] {command_list[0]} (tag={tag})"))
@@ -238,8 +239,10 @@ def wfb_rx_worker(command_list, event_queue, tag="wfb"):
                 process.terminate()
                 break
 
-            # If this is 'video' feed => parse_video_line
-            line = parse_video_line(raw_line) if tag == "wfb" else clean_line_keep_timestamp(raw_line)
+            if tag == "wfb":  # "video"
+                line = parse_video_line(raw_line)
+            else:
+                line = clean_line_keep_timestamp(raw_line)
 
             if line.strip():
                 event_queue.put((tag, line))
@@ -256,10 +259,11 @@ def wfb_rx_worker(command_list, event_queue, tag="wfb"):
 def wfb_tx_worker(command_list, event_queue, tag="tunnel"):
     """
     wfb_tx with merged stderr->stdout.
-    Lines are kept as-is for now.
+    We keep lines as is, just strip trailing newlines.
     """
     try:
         event_queue.put((tag, f"[STARTING] {command_list[0]} (tag={tag})"))
+
         process = subprocess.Popen(
             command_list,
             stdout=subprocess.PIPE,
@@ -287,7 +291,7 @@ def wfb_tx_worker(command_list, event_queue, tag="tunnel"):
 
 def wfb_tun_worker(command_list, event_queue):
     """
-    wfb_tun with merged stderr->stdout. Lines are kept as-is.
+    wfb_tun with merged stderr->stdout, lines kept as is.
     """
     try:
         event_queue.put(("tunnel", "[STARTING] wfb_tun"))
@@ -325,7 +329,7 @@ def ncurses_main(stdscr):
     curses.start_color()
     curses.use_default_colors()
 
-    # We'll define some color pairs: green=1, yellow=2, magenta=3, red=4
+    # Define color pairs for green=1, yellow=2, magenta=3, red=4
     curses.init_pair(1, curses.COLOR_GREEN, -1)
     curses.init_pair(2, curses.COLOR_YELLOW, -1)
     curses.init_pair(3, curses.COLOR_MAGENTA, -1)  # "orange"
@@ -335,15 +339,14 @@ def ncurses_main(stdscr):
         "green": curses.color_pair(1),
         "yellow": curses.color_pair(2),
         "magenta": curses.color_pair(3),
-        "red": curses.color_pair(4)
+        "red": curses.color_pair(4),
     }
 
     # 1. Load config
-    import configparser
     config = configparser.ConfigParser()
     config.read("config.cfg")
 
-    # Common stuff + rssi_min/rssi_max for ASCII bar scale
+    # Common stuff + rssi_min/rssi_max
     ip = config.get("common", "ip_address", fallback="192.168.1.49")
     port = config.get("common", "port", fallback="5600")
     region = config.get("common", "region", fallback="00")
@@ -400,7 +403,7 @@ def ncurses_main(stdscr):
 
     event_queue.put(("status", f"[DEBUG] final all_ifaces = {list(all_ifaces)}"))
 
-    # 5. Determine mode for each interface
+    # 5. Determine mode
     def get_mode(iface):
         in_rx = iface in rx_wlans
         is_tx = (iface == tx_adapter)
@@ -516,8 +519,6 @@ def ncurses_main(stdscr):
     stdscr.clear()
     height, width = stdscr.getmaxyx()
 
-    # We'll split top half into (status_win, stats_win)
-    # bottom half into (wfb_win, tunnel_win)
     half_height = height // 2
     top_left_width = width // 2
     top_right_width = width - top_left_width
@@ -546,10 +547,10 @@ def ncurses_main(stdscr):
     wfb_logs = []
     tunnel_logs = []
 
-    # Instead of a queue of lines, we keep a dict for the latest line per ID
-    wfb_rxant_dict = {}  # {wlan_id: latest RX_ANT line}
+    # We store the latest RX_ANT line per ID
+    wfb_rxant_dict = {}
 
-    # Window headers
+    # Headers
     status_header = []
     stats_header  = ["[ASCII RSSI Chart for VIDEO feed (color-coded)]"]
 
@@ -599,10 +600,9 @@ def ncurses_main(stdscr):
                 wfb_logs.append(text)
                 if len(wfb_logs) > 1000:
                     wfb_logs.pop(0)
-
+                # If line starts with RX_ANT, store in dict
                 parts = text.split()
                 if len(parts) >= 4 and parts[0] == "RX_ANT":
-                    # ID = parts[2]
                     wlan_id = parts[2]
                     wfb_rxant_dict[wlan_id] = text
 
@@ -610,6 +610,7 @@ def ncurses_main(stdscr):
                 tunnel_logs.append(text)
                 if len(tunnel_logs) > 1000:
                     tunnel_logs.pop(0)
+                # If we want to do tunnel RX_ANT storing, do similarly
 
         # Redraw top-left (status)
         status_win.erase()
@@ -633,8 +634,8 @@ def ncurses_main(stdscr):
         stats_win.erase()
         stats_win.border()
 
-        # Generate chart lines: returns list of (text, avg_rssi)
-        chart_items = generate_rssi_chart(wfb_rxant_dict, rssi_min, rssi_max)
+        # Build chart lines => [(line_str, avg_rssi), ...], sorted desc
+        chart_lines = generate_rssi_chart(wfb_rxant_dict, rssi_min, rssi_max)
         leftover_stats_lines = MAX_STATS_LINES - 1 - len(stats_header)
 
         row = 1
@@ -644,12 +645,17 @@ def ncurses_main(stdscr):
             stats_win.addstr(row, 1, hl)
             row += 1
 
-        for (chart_line, avg_rssi) in chart_items[-leftover_stats_lines:]:
+        # Print them with color
+        for line_str, avg_rssi in chart_lines[-leftover_stats_lines:]:
             if row >= MAX_STATS_LINES:
                 break
-            # Choose a color based on avg_rssi
-            color_attr = get_rssi_color(avg_rssi, color_pairs)
-            stats_win.addstr(row, 1, chart_line, color_attr)
+            color_attr = get_rssi_color(avg_rssi, {
+                "green": curses.color_pair(1),
+                "yellow": curses.color_pair(2),
+                "magenta": curses.color_pair(3),
+                "red": curses.color_pair(4),
+            })
+            stats_win.addstr(row, 1, line_str, color_attr)
             row += 1
 
         stats_win.refresh()

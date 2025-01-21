@@ -169,7 +169,7 @@ def generate_rssi_chart(wfb_rxant_dict, rssi_min, rssi_max):
             continue
         scale = (avg_rssi - rssi_min)/rng
         scale = max(0.0, min(scale, 1.0))
-        bar_count = int(scale * 10)
+        bar_count = int(scale * 35)
         bar_str = "#" * bar_count
         line_str = f"{wlan_id}: avg={int(avg_rssi)} | {bar_str}"
         lines.append((line_str, avg_rssi))

@@ -433,7 +433,7 @@ def ncurses_main(stdscr):
         "-p", "0",
         "-c", ip,
         "-u", port,
-        "-K", "/etc/gs.key",
+        "-K", key_path,
         "-R", "2097152",
         "-l", str(log_interval),
         "-i", "7669206"

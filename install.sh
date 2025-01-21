@@ -40,24 +40,6 @@ else
   exit 1
 fi
 
-# Clone application files
-cd /home/deck || { echo "Failed to change to /home/deck. Exiting."; exit 1; }
-if ! git clone https://github.com/snokvist/steam_wfb-ng.git; then
-  echo "Failed to clone repository. Exiting."
-  exit 1
-fi
-cd /home/deck/steam_wfb-ng || { echo "Failed to enter application directory. Exiting."; exit 1; }
-
-# Make all files owned by deck:deck
-echo "Setting ownership of files to deck:deck..."
-chown -R deck:deck /home/deck/steam_wfb-ng
-if [[ $? -eq 0 ]]; then
-  echo "Ownership updated successfully."
-else
-  echo "Failed to update ownership. Exiting."
-  exit 1
-fi
-
 # Make necessary files executable
 echo "Making application files executable..."
 chmod +x terminal.sh final_cleanup.sh fpv.sh steam_wfb.py wfb_keygen wfb_rx wfb_tun wfb_tx wfb_tx_cmd wlan_init.sh
@@ -120,3 +102,4 @@ fi
 
 # Final instructions
 echo -e "\nSetup complete! Please restart your Steam Deck to apply sudoers changes."
+echo -e "\nChange config.cfg to match your system requirements."

@@ -32,8 +32,8 @@ fi
 
 # Install necessary system applications
 echo "Installing necessary applications..."
-apts=(python3 build-essential libncurses-dev wireless-tools net-tools git awk make pgrep xdotool xprop xrandr xxd xwininfo yad)
-if apt update && apt install -y "${apts[@]}"; then
+apts=(python net-tools git gawk make xdotool vim yad)
+if pacman -S --noconfirm "${apts[@]}"; then
   echo "Applications installed successfully."
 else
   echo "Failed to install necessary applications. Exiting."
@@ -48,94 +48,76 @@ if ! git clone https://github.com/snokvist/steam_wfb-ng.git; then
 fi
 cd /home/deck/steam_wfb-ng || { echo "Failed to enter application directory. Exiting."; exit 1; }
 
-# Interactive configuration
-echo "Configuring application..."
-iw dev
-interfaces=( "none" $(iw dev | grep Interface | awk '{print $2}') )
-echo "Available WiFi interfaces (select 'none' to leave empty):"
-select wlan in "${interfaces[@]}"; do
-  if [[ "$wlan" == "none" ]]; then
-    wlan=""
-    echo "No WiFi interface selected."
-    break
-  elif [[ -n "$wlan" ]]; then
-    echo "Selected interface: $wlan"
-    break
-  else
-    echo "Invalid selection. Try again."
+# Make all files owned by deck:deck
+echo "Setting ownership of files to deck:deck..."
+chown -R deck:deck /home/deck/steam_wfb-ng
+if [[ $? -eq 0 ]]; then
+  echo "Ownership updated successfully."
+else
+  echo "Failed to update ownership. Exiting."
+  exit 1
+fi
+
+# Make necessary files executable
+echo "Making application files executable..."
+chmod +x final_cleanup.sh fpv.sh steam_wfb.py wfb_keygen wfb_rx wfb_tun wfb_tx wfb_tx_cmd wlan_init.sh
+if [[ $? -eq 0 ]]; then
+  echo "Files made executable successfully."
+else
+  echo "Failed to make some files executable. Exiting."
+  exit 1
+fi
+
+
+# Ask user whether to install Steam shortcuts
+read -p "Do you want to install Steam shortcuts for the application? (y/n): " install_shortcuts
+if [[ "$install_shortcuts" == "y" ]]; then
+  # Clone SteamTinkerLaunch
+  echo "Cloning SteamTinkerLaunch..."
+  if ! sudo -u deck git clone https://github.com/sonic2kk/steamtinkerlaunch.git; then
+    echo "Failed to clone SteamTinkerLaunch repository. Exiting."
+    exit 1
   fi
-done
 
-read -p "Choose WiFi region (US/BO/00 or enter a valid custom region): " region
-read -p "Choose bandwidth (20/40 MHz): " bandwidth
+  # Install SteamTinkerLaunch
+  cd steamtinkerlaunch || { echo "Failed to enter SteamTinkerLaunch directory. Exiting."; exit 1; }
+  echo "Installing SteamTinkerLaunch system-wide..."
+  if make install; then
+    echo "SteamTinkerLaunch installed system-wide."
+  else
+    echo "Failed to install SteamTinkerLaunch system-wide. Exiting."
+    exit 1
+  fi
+  sudo -u deck steamtinkerlaunch compat add
 
-# Available channels
-echo "Available channels based on region $region (ensure this is valid):"
-echo -e "5745 MHz [149]\n5765 MHz [153]\n5785 MHz [157]\n5805 MHz [161]\n5825 MHz [165]"
-read -p "Enter your desired channel (or custom, ensure it is valid): " channel
+  # Set language to English automatically
+  echo "Setting language to English..."
+  sudo -u deck ./steamtinkerlaunch lang=lang/english.txt
+  sudo -u deck mkdir -p ~/.config/steamtinkerlaunch/lang
+  sudo -u deck cp lang/english.txt ~/.config/steamtinkerlaunch/lang/
 
-# Update config.cfg
-echo "Updating config.cfg..."
-sed -i "s/^ip_address.*/ip_address=127.0.0.1/" config.cfg
-sed -i "s/^region.*/region=$region/" config.cfg
-sed -i "s/^bandwidth.*/bandwidth=$bandwidth/" config.cfg
-sed -i "s/^channel.*/channel=$channel/" config.cfg
-sed -i "s/^rx_wlans.*/rx_wlans=$wlan/" config.cfg
+  # Add shortcuts using SteamTinkerLaunch
+  cd /home/deck/steam_wfb-ng || { echo "Failed to return to /home/deck/steam_wfb-ng. Exiting."; exit 1; }
 
-# Generate key pair
-echo "Generating key pair..."
-if ./wfb_keygen; then
-  echo "Key pair generated."
-else
-  echo "Failed to generate key pair. Exiting."
-  exit 1
+  # Ensure Steam is closed before adding shortcuts
+  echo "Ensuring Steam is closed..."
+  killall -q steam && echo "Steam closed."
+
+  sleep 2
+
+  echo "Adding Steam shortcuts for fpv.sh..."
+  sudo -u deck steamtinkerlaunch addnonsteamgame --appname="Steam WFB_NG Terminal" --exepath="home/deck/steam_wfb-ng/terminal.sh" --startdir="/home/deck/steam_wfb-ng/" --launchoptions="-p 'TerminalColumns=100' -p 'TerminalRows=42' -e ./steam_wfb.py"
+  sudo -u deck steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video+Record" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video+record"
+  sudo -u deck steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video+Audio" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video+audio"
+  sudo -u deck steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video+Audio+Record" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video+audio+record"
+
+  sleep 2
+
+  # Restart Steam
+  echo "Restarting Steam..."
+  sudo -u deck steam &
 fi
-
-# Clone SteamTinkerLaunch
-echo "Cloning SteamTinkerLaunch..."
-if ! git clone https://github.com/sonic2kk/steamtinkerlaunch.git; then
-  echo "Failed to clone SteamTinkerLaunch repository. Exiting."
-  exit 1
-fi
-
-# Install SteamTinkerLaunch
-cd steamtinkerlaunch || { echo "Failed to enter SteamTinkerLaunch directory. Exiting."; exit 1; }
-echo "Installing SteamTinkerLaunch system-wide..."
-if make install; then
-  echo "SteamTinkerLaunch installed system-wide."
-else
-  echo "Failed to install SteamTinkerLaunch system-wide. Exiting."
-  exit 1
-fi
-steamtinkerlaunch compat add
-
-# Set language to English automatically
-echo "Setting language to English..."
-./steamtinkerlaunch lang=lang/english.txt
-mkdir -p ~/.config/steamtinkerlaunch/lang
-cp lang/english.txt ~/.config/steamtinkerlaunch/lang/
-
-# Add shortcuts using SteamTinkerLaunch
-cd /home/deck/steam_wfb-ng || { echo "Failed to return to /home/deck/steam_wfb-ng. Exiting."; exit 1; }
-
-# Ensure Steam is closed before adding shortcuts
-echo "Ensuring Steam is closed..."
-killall -q steam && echo "Steam closed."
-
-echo "Adding Steam shortcuts for fpv.sh..."
-steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video"
-steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video+Record" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video+record"
-steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video+Audio" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video+audio"
-steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video+Audio+Record" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video+audio+record"
-
-# Add shortcut for steam_wfb.py in terminal
-steamtinkerlaunch addnonsteamgame --appname="Steam WFB_NG Terminal" --exepath="/bin/konsole" --startdir="/home/deck/steam_wfb-ng/" --launchoptions="-p 'TerminalColumns=100' -p 'TerminalRows=42' -e ./steam_wfb.py"
-
-# Restart Steam
-echo "Restarting Steam..."
-steam &
 
 # Final instructions
 echo -e "\nSetup complete! Please restart your Steam Deck to apply sudoers changes."
-echo -e "To configure SteamTinkerLaunch, refer to its documentation.\n"
-
+echo -e "\nEdit config.cfg for your system parameters."

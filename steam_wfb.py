@@ -10,8 +10,6 @@ import signal
 import sys
 import textwrap
 
-from collections import OrderedDict
-
 STOP_EVENT = threading.Event()  # Set when we want to stop all threads
 CHILD_PROCESSES = []            # Track all subprocess.Popen objects
 CTRL_C_TRIGGERED = False        # True if user pressed Ctrl+C
@@ -26,7 +24,7 @@ def handle_sigint(signum, frame):
 signal.signal(signal.SIGINT, handle_sigint)
 
 # --------------------------------------------------------------------------
-# Helpers
+# Wrapping / Cleaning Helpers
 # --------------------------------------------------------------------------
 
 def wrap_command(cmd_list, width):
@@ -56,7 +54,7 @@ def draw_window(win, header_lines, log_lines, max_height, max_width):
         win.addstr(row, 1, hline)
         row += 1
 
-    # Remaining lines for logs
+    # Print the last portion of log_lines
     leftover_lines = max_height - 1 - row
     slice_logs = log_lines[-leftover_lines:] if leftover_lines > 0 else []
     for log_line in slice_logs:
@@ -67,79 +65,124 @@ def draw_window(win, header_lines, log_lines, max_height, max_width):
 
     win.refresh()
 
-def clean_wfb_line(raw_line):
+def clean_line_keep_timestamp(line: str) -> str:
     """
-    Merge stderr into stdout, so we only read from stdout. We want to:
-      1) Strip trailing whitespace
-      2) Replace tabs with single spaces
-      3) If the first token is purely digits, remove it (the 'timestamp')
-      4) Rejoin the remainder with single spaces
+    Default: just strip trailing whitespace. Keep the entire line intact otherwise.
     """
-    line = raw_line.strip().replace('\t', ' ')
-    parts = line.split()
-    if parts and parts[0].isdigit():
-        parts = parts[1:]
-    return ' '.join(parts)
+    return line.rstrip('\n\r')
+
+def clean_line_remove_timestamp(line: str) -> str:
+    """
+    If first token is purely digits, remove it.
+    (Used for lines that start with 'RX_ANT' or 'PKT'.)
+    """
+    tmp = line.strip()
+    parts = tmp.split()
+    if len(parts) > 1 and parts[0].isdigit():
+        # remove the first token
+        return " ".join(parts[1:])
+    else:
+        return tmp
+
+def parse_video_line(line: str) -> str:
+    """
+    In the video feed, only remove the timestamp if the line actually starts with "RX_ANT" or "PKT".
+    Otherwise keep the line as-is.
+    """
+    tmp = line.strip()
+    # Quick check:
+    # If after removing leading digits the next token is "RX_ANT" or "PKT", we remove that digit token.
+    parts = tmp.split(None, 2)  # split into at most 3 tokens
+    if len(parts) >= 2:
+        # If second token is "RX_ANT" or "PKT" and first token is digits -> remove
+        if parts[1] in ["RX_ANT", "PKT"] and parts[0].isdigit():
+            # Rejoin the rest
+            return parts[1] + (" " + parts[2] if len(parts) == 3 else "")
+        else:
+            # Otherwise keep line as is
+            return tmp
+    else:
+        return tmp
 
 # --------------------------------------------------------------------------
-# ASCII Chart for RSSI
+# ASCII Chart Helpers
 # --------------------------------------------------------------------------
 
-def generate_rssi_chart(rxant_dict, rssi_min, rssi_max):
+def get_rssi_color(avg_rssi, color_pairs):
     """
-    For each unique ID in 'rxant_dict', we parse the latest line to find the avg_rssi.
-    Only show the most recent line for each ID (that's all we store).
-    Return a list of ASCII bar lines. For example:
-       c0a8013400000001: avg=-41 | ####
+    Return a curses color attribute based on avg_rssi:
+      >= -50 => green
+      >= -60 => yellow
+      >= -70 => magenta (like orange)
+      else   => red
+    color_pairs is a dict like {"green": curses.color_pair(1), ...}
     """
-    if not rxant_dict:
-        return ["No RX_ANT data yet..."]
+    if avg_rssi >= -50:
+        return color_pairs["green"]
+    elif avg_rssi >= -60:
+        return color_pairs["yellow"]
+    elif avg_rssi >= -70:
+        return color_pairs["magenta"]
+    else:
+        return color_pairs["red"]
+
+def generate_rssi_chart(wfb_rxant_dict, rssi_min, rssi_max):
+    """
+    Build a list of (text, avg_rssi) for each unique ID in wfb_rxant_dict.
+    We'll color the entire line based on avg_rssi in the drawing phase.
+    Format: "c0a8013400000001: avg=-41 | ####"
+    """
+    if not wfb_rxant_dict:
+        return [("No RX_ANT data yet...", 0)]
 
     lines = []
     rng = float(rssi_max - rssi_min)
     if rng < 1.0:
-        rng = 1.0  # avoid divide by zero
+        rng = 1.0
 
-    # We can sort by ID or by insertion order. Let's do sorted by ID for clarity
-    for wlan_id in sorted(rxant_dict.keys()):
-        entry = rxant_dict[wlan_id]
+    # Sort by strongest signal first => we parse each line's avg and sort descending
+    # We'll build a small list of (wlan_id, avg_rssi, text)
+    items = []
+    for wlan_id, entry in wfb_rxant_dict.items():
         parts = entry.split()
-        # parts typically: ["RX_ANT","5805:2:20","c0a8013400000001","2811:-42:-41:-41:0:0:0"]
+        # Example: ["RX_ANT","5805:2:20","c0a8013400000001","2811:-42:-41:-41:0:0:0"]
         if len(parts) < 4:
-            lines.append(entry)
+            items.append((wlan_id, -9999, entry))
             continue
-        # The ID is parts[2], the chunk with rssi is parts[3]
-        rssi_chunk = parts[3]
-        subparts = rssi_chunk.split(':')
-        if len(subparts) < 3:
-            lines.append(entry)
+        chunk = parts[3]  # "2811:-42:-41:-41:0:0:0"
+        sub = chunk.split(':')
+        if len(sub) < 3:
+            items.append((wlan_id, -9999, entry))
             continue
-
         try:
-            avg_rssi = float(subparts[2])  # the 'avg' is the 3rd field in "2811:-42:-41:-41..."
+            avg_rssi = float(sub[2])
         except ValueError:
-            lines.append(entry)
-            continue
+            avg_rssi = -9999
+        items.append((wlan_id, avg_rssi, entry))
 
-        # scale  => [0..1]
+    # Now sort by avg_rssi descending
+    items.sort(key=lambda x: x[1], reverse=True)
+
+    for wlan_id, avg_rssi, entry in items:
+        if avg_rssi < -200:  # invalid data
+            lines.append((f"{wlan_id}: ???", avg_rssi))
+            continue
         scale = (avg_rssi - rssi_min)/rng
         scale = max(0.0, min(scale, 1.0))
-
-        bar_count = int(scale * 30)  # 0..10
-        bar = "#" * bar_count
-        line_text = f"{wlan_id}: avg={int(avg_rssi)} | {bar}"
-        lines.append(line_text)
-
+        bar_count = int(scale * 35)
+        bar_str = "#" * bar_count
+        line_str = f"{wlan_id}: avg={int(avg_rssi)} | {bar_str}"
+        lines.append((line_str, avg_rssi))
     return lines
 
 # --------------------------------------------------------------------------
-# Worker Threads (with stderr -> stdout merged)
+# Worker Functions
 # --------------------------------------------------------------------------
 
 def wlan_worker(interface, tx_power, channel, region, bandwidth, mode, event_queue):
     """
-    Runs wlan_init.sh <iface> <tx_power> <channel> <region> <bandwidth> <mode>.
-    Merges stderr->stdout so we read from a single stream.
+    Runs wlan_init.sh <iface> <tx_power> <channel> <region> <bandwidth> <mode>,
+    merging stderr->stdout. We pass every line to 'status' with minimal changes.
     """
     try:
         command_list = [
@@ -151,7 +194,7 @@ def wlan_worker(interface, tx_power, channel, region, bandwidth, mode, event_que
         process = subprocess.Popen(
             command_list,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,  # <== Merge stderr into stdout
+            stderr=subprocess.STDOUT,  # merge
             text=True
         )
         CHILD_PROCESSES.append(process)
@@ -160,8 +203,8 @@ def wlan_worker(interface, tx_power, channel, region, bandwidth, mode, event_que
             if STOP_EVENT.is_set():
                 process.terminate()
                 break
-            line = clean_wfb_line(raw_line)
-            if line:
+            line = clean_line_keep_timestamp(raw_line)
+            if line.strip():
                 event_queue.put(("status", f"[{interface}] {line}"))
 
         return_code = process.wait()
@@ -176,38 +219,8 @@ def wlan_worker(interface, tx_power, channel, region, bandwidth, mode, event_que
 def wfb_rx_worker(command_list, event_queue, tag="wfb"):
     """
     wfb_rx with merged stderr->stdout.
-    """
-    try:
-        event_queue.put((tag, f"[STARTING] {command_list[0]} command (tag={tag})"))
-
-        process = subprocess.Popen(
-            command_list,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,  # merge
-            text=True
-        )
-        CHILD_PROCESSES.append(process)
-
-        for raw_line in process.stdout:
-            if STOP_EVENT.is_set():
-                process.terminate()
-                break
-            line = clean_wfb_line(raw_line)
-            if line:
-                event_queue.put((tag, line))
-
-        return_code = process.wait()
-        if return_code == 0:
-            event_queue.put((tag, f"[COMPLETED] {command_list[0]}"))
-        else:
-            event_queue.put((tag, f"[FAILED/TERMINATED] {command_list[0]}, code {return_code}"))
-
-    except Exception as e:
-        event_queue.put((tag, f"[ERROR] {command_list[0]}: {str(e)}"))
-
-def wfb_tx_worker(command_list, event_queue, tag="tunnel"):
-    """
-    wfb_tx with merged stderr->stdout.
+    In the 'video' feed, only remove timestamp if line starts with 'RX_ANT' or 'PKT',
+    otherwise keep as-is.
     """
     try:
         event_queue.put((tag, f"[STARTING] {command_list[0]} (tag={tag})"))
@@ -224,8 +237,43 @@ def wfb_tx_worker(command_list, event_queue, tag="tunnel"):
             if STOP_EVENT.is_set():
                 process.terminate()
                 break
-            line = clean_wfb_line(raw_line)
-            if line:
+
+            # If this is 'video' feed => parse_video_line
+            line = parse_video_line(raw_line) if tag == "wfb" else clean_line_keep_timestamp(raw_line)
+
+            if line.strip():
+                event_queue.put((tag, line))
+
+        return_code = process.wait()
+        if return_code == 0:
+            event_queue.put((tag, f"[COMPLETED] {command_list[0]}"))
+        else:
+            event_queue.put((tag, f"[FAILED/TERMINATED] {command_list[0]}, code {return_code}"))
+
+    except Exception as e:
+        event_queue.put((tag, f"[ERROR] {command_list[0]}: {str(e)}"))
+
+def wfb_tx_worker(command_list, event_queue, tag="tunnel"):
+    """
+    wfb_tx with merged stderr->stdout.
+    Lines are kept as-is for now.
+    """
+    try:
+        event_queue.put((tag, f"[STARTING] {command_list[0]} (tag={tag})"))
+        process = subprocess.Popen(
+            command_list,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True
+        )
+        CHILD_PROCESSES.append(process)
+
+        for raw_line in process.stdout:
+            if STOP_EVENT.is_set():
+                process.terminate()
+                break
+            line = clean_line_keep_timestamp(raw_line)
+            if line.strip():
                 event_queue.put((tag, line))
 
         return_code = process.wait()
@@ -239,7 +287,7 @@ def wfb_tx_worker(command_list, event_queue, tag="tunnel"):
 
 def wfb_tun_worker(command_list, event_queue):
     """
-    wfb_tun with merged stderr->stdout.
+    wfb_tun with merged stderr->stdout. Lines are kept as-is.
     """
     try:
         event_queue.put(("tunnel", "[STARTING] wfb_tun"))
@@ -247,7 +295,7 @@ def wfb_tun_worker(command_list, event_queue):
         process = subprocess.Popen(
             command_list,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,  # merge
+            stderr=subprocess.STDOUT,
             text=True
         )
         CHILD_PROCESSES.append(process)
@@ -256,8 +304,8 @@ def wfb_tun_worker(command_list, event_queue):
             if STOP_EVENT.is_set():
                 process.terminate()
                 break
-            line = clean_wfb_line(raw_line)
-            if line:
+            line = clean_line_keep_timestamp(raw_line)
+            if line.strip():
                 event_queue.put(("tunnel", line))
 
         return_code = process.wait()
@@ -274,7 +322,24 @@ def wfb_tun_worker(command_list, event_queue):
 # --------------------------------------------------------------------------
 
 def ncurses_main(stdscr):
+    curses.start_color()
+    curses.use_default_colors()
+
+    # We'll define some color pairs: green=1, yellow=2, magenta=3, red=4
+    curses.init_pair(1, curses.COLOR_GREEN, -1)
+    curses.init_pair(2, curses.COLOR_YELLOW, -1)
+    curses.init_pair(3, curses.COLOR_MAGENTA, -1)  # "orange"
+    curses.init_pair(4, curses.COLOR_RED, -1)
+
+    color_pairs = {
+        "green": curses.color_pair(1),
+        "yellow": curses.color_pair(2),
+        "magenta": curses.color_pair(3),
+        "red": curses.color_pair(4)
+    }
+
     # 1. Load config
+    import configparser
     config = configparser.ConfigParser()
     config.read("config.cfg")
 
@@ -451,7 +516,7 @@ def ncurses_main(stdscr):
     stdscr.clear()
     height, width = stdscr.getmaxyx()
 
-    # We'll split top half into (status_win, stats_win),
+    # We'll split top half into (status_win, stats_win)
     # bottom half into (wfb_win, tunnel_win)
     half_height = height // 2
     top_left_width = width // 2
@@ -478,16 +543,15 @@ def ncurses_main(stdscr):
 
     # Buffers for logs
     status_logs = []
-    stats_logs = []
     wfb_logs = []
     tunnel_logs = []
 
-    # Instead of storing 20 lines, we store a dictionary of the latest line per ID
-    wfb_rxant_dict = {}  # key=unique ID, value=the entire line
+    # Instead of a queue of lines, we keep a dict for the latest line per ID
+    wfb_rxant_dict = {}  # {wlan_id: latest RX_ANT line}
 
     # Window headers
     status_header = []
-    stats_header  = ["[ASCII RSSI Chart for video feed]"]
+    stats_header  = ["[ASCII RSSI Chart for VIDEO feed (color-coded)]"]
 
     wfb_header_lines = ["[VIDEO RX COMMAND]:"]
     wfb_header_lines += wrap_command(wfb_video_cmd, wfb_width - 2)
@@ -499,7 +563,6 @@ def ncurses_main(stdscr):
     tunnel_header_lines.append("[TUNNEL TUN COMMAND]:")
     tunnel_header_lines += wrap_command(tunnel_tun_cmd, tunnel_width - 2)
 
-    # Some max lines for each window
     MAX_STATUS_LINES = half_height - 2
     MAX_STATS_LINES  = half_height - 2
     MAX_WFB_LINES    = bottom_height - 2
@@ -510,112 +573,98 @@ def ncurses_main(stdscr):
 
     # ----------------------------------------------------------------------
     # 10. Main UI loop
-    try:
+    while True:
+        if STOP_EVENT.is_set():
+            # Terminate all processes
+            for proc in CHILD_PROCESSES:
+                if proc.poll() is None:
+                    proc.terminate()
+            break
+
+        alive_threads = any(t.is_alive() for t in threads)
+
+        # Drain event_queue
         while True:
-            if STOP_EVENT.is_set():
-                # Terminate all processes
-                for proc in CHILD_PROCESSES:
-                    if proc.poll() is None:
-                        proc.terminate()
+            try:
+                kind, text = event_queue.get_nowait()
+            except queue.Empty:
                 break
 
-            alive_threads = any(t.is_alive() for t in threads)
+            if kind == "status":
+                status_logs.append(text)
+                if len(status_logs) > 1000:
+                    status_logs.pop(0)
 
-            # Drain event_queue
-            while True:
-                try:
-                    kind, text = event_queue.get_nowait()
-                except queue.Empty:
-                    break
+            elif kind == "wfb":
+                wfb_logs.append(text)
+                if len(wfb_logs) > 1000:
+                    wfb_logs.pop(0)
 
-                if kind == "status":
-                    status_logs.append(text)
-                    if len(status_logs) > 1000:
-                        status_logs.pop(0)
+                parts = text.split()
+                if len(parts) >= 4 and parts[0] == "RX_ANT":
+                    # ID = parts[2]
+                    wlan_id = parts[2]
+                    wfb_rxant_dict[wlan_id] = text
 
-                elif kind == "wfb":
-                    wfb_logs.append(text)
-                    if len(wfb_logs) > 1000:
-                        wfb_logs.pop(0)
+            elif kind == "tunnel":
+                tunnel_logs.append(text)
+                if len(tunnel_logs) > 1000:
+                    tunnel_logs.pop(0)
 
-                    parts = text.split()
-                    if len(parts) >= 4 and parts[0] == "RX_ANT":
-                        # ID is parts[2], the rssi chunk is parts[3], store the entire line
-                        wlan_id = parts[2]
-                        wfb_rxant_dict[wlan_id] = text
-
-                elif kind == "tunnel":
-                    tunnel_logs.append(text)
-                    if len(tunnel_logs) > 1000:
-                        tunnel_logs.pop(0)
-                    # If you also want to handle RX_ANT for tunnel, do similarly:
-                    # parts = text.split()
-                    # if len(parts) >= 4 and parts[0] == "RX_ANT":
-                    #     ...
-                    #     store in a separate dictionary
-
-            # Redraw top-left (status)
-            status_win.erase()
-            status_win.border()
-            leftover_status_lines = MAX_STATUS_LINES - 1 - len(status_header)
-            slice_status = status_logs[-leftover_status_lines:] if leftover_status_lines > 0 else []
-            row = 1
-            for hl in status_header:
-                if row >= MAX_STATUS_LINES:
-                    break
-                status_win.addstr(row, 1, hl)
-                row += 1
-            for line in slice_status:
-                if row >= MAX_STATUS_LINES:
-                    break
-                status_win.addstr(row, 1, line)
-                row += 1
-            status_win.refresh()
-
-            # Redraw top-right (stats)
-            stats_win.erase()
-            stats_win.border()
-            # We'll generate ASCII bars from the dictionary wfb_rxant_dict
-            ascii_bars = generate_rssi_chart(wfb_rxant_dict, rssi_min, rssi_max)
-            leftover_stats_lines = MAX_STATS_LINES - 1 - len(stats_header)
-
-            row = 1
-            for hl in stats_header:
-                if row >= MAX_STATS_LINES:
-                    break
-                stats_win.addstr(row, 1, hl)
-                row += 1
-
-            # Show the ASCII bars
-            relevant_bars = ascii_bars[-leftover_stats_lines:] if leftover_stats_lines > 0 else []
-            for bar_line in relevant_bars:
-                if row >= MAX_STATS_LINES:
-                    break
-                stats_win.addstr(row, 1, bar_line)
-                row += 1
-
-            stats_win.refresh()
-
-            # Bottom-left: video (wfb)
-            draw_window(wfb_win, wfb_header_lines, wfb_logs, bottom_height, wfb_width)
-
-            # Bottom-right: tunnel
-            draw_window(tunnel_win, tunnel_header_lines, tunnel_logs, bottom_height, tunnel_width)
-
-            # If no threads left & queue empty -> done
-            if not alive_threads and event_queue.empty():
+        # Redraw top-left (status)
+        status_win.erase()
+        status_win.border()
+        leftover_status_lines = MAX_STATUS_LINES - 1 - len(status_header)
+        slice_status = status_logs[-leftover_status_lines:] if leftover_status_lines > 0 else []
+        row = 1
+        for hl in status_header:
+            if row >= MAX_STATUS_LINES:
                 break
+            status_win.addstr(row, 1, hl)
+            row += 1
+        for line in slice_status:
+            if row >= MAX_STATUS_LINES:
+                break
+            status_win.addstr(row, 1, line)
+            row += 1
+        status_win.refresh()
 
-            time.sleep(0.1)
+        # Redraw top-right (stats)
+        stats_win.erase()
+        stats_win.border()
 
-    except KeyboardInterrupt:
-        # If a direct KeyboardInterrupt occurs, treat like Ctrl+C
-        global CTRL_C_TRIGGERED
-        CTRL_C_TRIGGERED = True
-        STOP_EVENT.set()
-        for proc in CHILD_PROCESSES:
-            if proc.poll() is None:
-                proc.terminate()
+        # Generate chart lines: returns list of (text, avg_rssi)
+        chart_items = generate_rssi_chart(wfb_rxant_dict, rssi_min, rssi_max)
+        leftover_stats_lines = MAX_STATS_LINES - 1 - len(stats_header)
+
+        row = 1
+        for hl in stats_header:
+            if row >= MAX_STATS_LINES:
+                break
+            stats_win.addstr(row, 1, hl)
+            row += 1
+
+        for (chart_line, avg_rssi) in chart_items[-leftover_stats_lines:]:
+            if row >= MAX_STATS_LINES:
+                break
+            # Choose a color based on avg_rssi
+            color_attr = get_rssi_color(avg_rssi, color_pairs)
+            stats_win.addstr(row, 1, chart_line, color_attr)
+            row += 1
+
+        stats_win.refresh()
+
+        # Bottom-left: video (wfb)
+        draw_window(wfb_win, wfb_header_lines, wfb_logs, bottom_height, wfb_width)
+
+        # Bottom-right: tunnel
+        draw_window(tunnel_win, tunnel_header_lines, tunnel_logs, bottom_height, tunnel_width)
+
+        # If no threads left & queue empty -> done
+        if not alive_threads and event_queue.empty():
+            break
+
+        time.sleep(0.1)
 
     # ----------------------------------------------------------------------
     # 11. Final cleanup step
@@ -627,8 +676,7 @@ def ncurses_main(stdscr):
         event_queue.put(("status", f"[ERROR] Could not complete the final cleanup: {e}"))
 
     if CTRL_C_TRIGGERED:
-        # Exit immediately if user pressed Ctrl+C
-        return
+        return  # Exit immediately if user pressed Ctrl+C
 
     # Otherwise, show final logs
     stdscr.nodelay(False)

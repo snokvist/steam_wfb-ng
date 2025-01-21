@@ -65,7 +65,7 @@ elif [ "$MODE" = "tx" ]; then
   echo "TODO: Insert TX-only commands here"
   sudo wfb_rx -f -c 127.0.0.1 -u 10001 -p 32 -i 7669206 -R 2097152 "$WLAN_INTERFACE" &
   sudo wfb_tx -I 11001 -R 2097152  "$WLAN_INTERFACE" &
-  iw dev "$WLAN_INTERFACE" set txpower fixed "$TX_POWER"
+  sudo iw dev "$WLAN_INTERFACE" set txpower fixed "$TX_POWER"
   sleep 2
   echo "Done (TX mode)."
   wait -n
@@ -77,7 +77,7 @@ elif [ "$MODE" = "rx-tx" ]; then
   sudo wfb_rx -f -c 127.0.0.1 -u 10000 -p 0  -i 7669206 -R 2097152 "$WLAN_INTERFACE" &
   sudo wfb_rx -f -c 127.0.0.1 -u 10001 -p 32 -i 7669206 -R 2097152 "$WLAN_INTERFACE" &
   sudo wfb_tx -I 11001 -R 2097152  "$WLAN_INTERFACE" &
-  iw dev "$WLAN_INTERFACE" set txpower fixed "$TX_POWER"
+  sudo iw dev "$WLAN_INTERFACE" set txpower fixed "$TX_POWER"
   sleep 2
   echo "Done (RX-TX mode)."
   wait -n

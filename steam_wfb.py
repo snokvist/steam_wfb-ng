@@ -445,7 +445,7 @@ def daemon_main():
             "-d",
             "-f", "data",
             "-p", "160",
-            "-u", "0",
+            "-u", "12001",
             "-K", key_path,
             "-B", str(tunnel_bw),
             "-G", "long",
@@ -466,7 +466,7 @@ def daemon_main():
             "./wfb_tun",
             "-a", "10.5.0.1/24",
             "-l", "10001",
-            "-u", "10002",
+            "-u", "12001",
             "-T", str(tunnel_agg_time)
         ]
 
@@ -679,7 +679,7 @@ def ncurses_main(stdscr):
             "-d",
             "-f", "data",
             "-p", "160",
-            "-u", "0",
+            "-u", "12001",
             "-K", key_path,
             "-B", str(tunnel_bw),
             "-G", "long",
@@ -700,7 +700,7 @@ def ncurses_main(stdscr):
             "./wfb_tun",
             "-a", "10.5.0.1/24",
             "-l", "10001",
-            "-u", "10002",
+            "-u", "12001",
             "-T", str(tunnel_agg_time)
         ]
 

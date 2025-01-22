@@ -108,7 +108,7 @@ def get_rssi_color(avg_rssi, color_pairs):
     Return a curses color attribute based on avg_rssi:
       >= -50 => green
       >= -60 => yellow
-      >= -70 => magenta (orange)
+      >= -70 => magenta
       else   => red
     """
     if avg_rssi >= -50:
@@ -120,7 +120,7 @@ def get_rssi_color(avg_rssi, color_pairs):
     else:
         return color_pairs["red"]
 
-def generate_rssi_chart(wfb_rxant_dict, rssi_min, rssi_max):
+def generate_rssi_chart(wfb_rxant_dict, rssi_min, rssi_max, bar_count):
     """
     Build a list of (line_text, avg_rssi) for each unique ID in wfb_rxant_dict,
     sorted descending by avg_rssi.
@@ -136,11 +136,11 @@ def generate_rssi_chart(wfb_rxant_dict, rssi_min, rssi_max):
     items = []
     for wlan_id, entry in wfb_rxant_dict.items():
         parts = entry.split()
-        # e.g. ["RX_ANT","5805:2:20","c0a8013400000001","2811:-42:-41:-41:0:0:0"]
         if len(parts) < 4:
+            # Something unexpected
             items.append((wlan_id, -9999, entry))
             continue
-        chunk = parts[3]  # the "2811:-42:-41:-41:..." portion
+        chunk = parts[3]  # e.g. "2811:-42:-41:-41:0:0:0"
         sub = chunk.split(':')
         if len(sub) < 3:
             items.append((wlan_id, -9999, entry))
@@ -160,52 +160,87 @@ def generate_rssi_chart(wfb_rxant_dict, rssi_min, rssi_max):
             continue
         scale = (avg_rssi - rssi_min)/rng
         scale = max(0.0, min(scale, 1.0))
-        bar_count = int(scale * 35)
-        bar_str = "#" * bar_count
+        bars = int(scale * bar_count)
+        bar_str = "#" * bars
         line_str = f"{wlan_id}: avg={int(avg_rssi)} | {bar_str}"
         lines.append((line_str, avg_rssi))
 
     return lines
 
+def generate_ascii_bar(value, vmin, vmax, bar_count):
+    """
+    Generic helper to produce a bar string of '#' according to the ratio
+    (value - vmin)/(vmax - vmin). Clamped between 0 and bar_count.
+    """
+    if vmax <= vmin:
+        rng = 1.0
+    else:
+        rng = float(vmax - vmin)
+    val_clamped = max(vmin, min(value, vmax))
+    scale = (val_clamped - vmin) / rng
+    length = int(round(scale * bar_count))
+    return "#" * length
+
 # --------------------------------------------------------------------------
 # Worker Functions (stderr -> stdout merged)
 # --------------------------------------------------------------------------
 
-def wlan_worker(interface, tx_power, channel, region, bandwidth, mode, event_queue):
+def wlan_worker(interface, tx_power, channel, region, bandwidth, mode,
+                event_queue, retry_timeout=5):
     """
-    Runs wlan_init.sh <iface> <tx_power> <channel> <region> <bandwidth> <mode>,
-    merging stderr->stdout. We pass every line to 'status' basically unchanged.
+    Runs wlan_init.sh <iface> <tx_power> <channel> <region> <bandwidth> <mode>
+    in a loop if it fails.
+
+    - On success (exit code 0), it breaks the loop.
+    - On failure, it waits `retry_timeout` seconds and tries again,
+      unless STOP_EVENT is set.
     """
-    try:
-        cmd = f"./wlan_init.sh {interface} {tx_power} {channel} {region} {bandwidth} {mode}"
-        command_list = ["bash", "-c", cmd]
+    while not STOP_EVENT.is_set():
+        try:
+            cmd = f"./wlan_init.sh {interface} {tx_power} {channel} {region} {bandwidth} {mode}"
+            command_list = ["bash", "-c", cmd]
 
-        event_queue.put(("status", f"[STARTING] WLAN: {interface} (mode={mode})"))
+            event_queue.put(("status", f"[STARTING] WLAN: {interface} (mode={mode})"))
 
-        process = subprocess.Popen(
-            command_list,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True
-        )
-        CHILD_PROCESSES.append(process)
+            process = subprocess.Popen(
+                command_list,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True
+            )
+            CHILD_PROCESSES.append(process)
 
-        for raw_line in process.stdout:
-            if STOP_EVENT.is_set():
-                process.terminate()
+            # Forward all lines from wlan_init.sh to the queue
+            for raw_line in process.stdout:
+                if STOP_EVENT.is_set():
+                    process.terminate()
+                    break
+                line = clean_line_keep_timestamp(raw_line)
+                if line.strip():
+                    event_queue.put(("status", f"[{interface}] {line}"))
+
+            return_code = process.wait()
+            if return_code == 0:
+                # Script ended "cleanly"
+                event_queue.put(("status", f"[COMPLETED] WLAN: {interface} (mode={mode})"))
                 break
-            line = clean_line_keep_timestamp(raw_line)
-            if line.strip():
-                event_queue.put(("status", f"[{interface}] {line}"))
+            else:
+                # Non-zero exit code => failure
+                event_queue.put(("status",
+                                 f"[FAILED/TERMINATED] WLAN: {interface} (mode={mode}), code {return_code}"))
+                if STOP_EVENT.is_set():
+                    break
+                event_queue.put(("status",
+                                 f"[RETRY] Waiting {retry_timeout}s before retrying WLAN init: {interface}"))
+                time.sleep(retry_timeout)
 
-        return_code = process.wait()
-        if return_code == 0:
-            event_queue.put(("status", f"[COMPLETED] WLAN: {interface} (mode={mode})"))
-        else:
-            event_queue.put(("status", f"[FAILED/TERMINATED] WLAN: {interface} (mode={mode}), code {return_code}"))
-
-    except Exception as e:
-        event_queue.put(("status", f"[ERROR] WLAN: {interface} (mode={mode}) - {str(e)}"))
+        except Exception as e:
+            event_queue.put(("status", f"[ERROR] WLAN: {interface} (mode={mode}) - {str(e)}"))
+            if STOP_EVENT.is_set():
+                break
+            event_queue.put(("status",
+                             f"[RETRY] Exception thrown. Waiting {retry_timeout}s before retrying: {interface}"))
+            time.sleep(retry_timeout)
 
 def wfb_rx_worker(command_list, event_queue, tag="wfb"):
     """
@@ -229,7 +264,7 @@ def wfb_rx_worker(command_list, event_queue, tag="wfb"):
                 process.terminate()
                 break
 
-            if tag == "wfb":  # "video"
+            if tag == "wfb":  # "video" lines
                 line = parse_video_line(raw_line)
             else:
                 line = clean_line_keep_timestamp(raw_line)
@@ -332,6 +367,7 @@ def daemon_main():
     region = config.get("common", "region", fallback="00")
     rssi_min = config.getint("common", "rssi_min", fallback=-80)
     rssi_max = config.getint("common", "rssi_max", fallback=-20)
+    retry_timeout = config.getint("common", "wlan_retry_timeout", fallback=5)
 
     rx_wlans_str = config.get("wlans", "rx_wlans", fallback="").strip()
     tx_wlans_str = config.get("wlans", "tx_wlan",  fallback="").strip()
@@ -365,6 +401,7 @@ def daemon_main():
     event_queue.put(("status", f"[DEBUG] remote_injector = '{remote_injector}'"))
     event_queue.put(("status", f"[DEBUG] log_interval = {log_interval}"))
     event_queue.put(("status", f"[DEBUG] rssi_min={rssi_min}, rssi_max={rssi_max}"))
+    event_queue.put(("status", f"[DEBUG] wlan_retry_timeout={retry_timeout}"))
 
     # Determine the actual TX adapter (if any)
     tx_adapter = None
@@ -397,7 +434,7 @@ def daemon_main():
         mode = get_mode(iface)
         t = threading.Thread(
             target=wlan_worker,
-            args=(iface, tx_power, channel, region, bandwidth, mode, event_queue),
+            args=(iface, tx_power, channel, region, bandwidth, mode, event_queue, retry_timeout),
             daemon=True
         )
         t.start()
@@ -515,7 +552,6 @@ def daemon_main():
             except queue.Empty:
                 break
 
-            # Just print to stdout
             print(f"[{kind.upper()}] {text}")
 
         # If no threads left & queue is empty -> done
@@ -548,7 +584,7 @@ def ncurses_main(stdscr):
     # Define color pairs
     curses.init_pair(1, curses.COLOR_GREEN, -1)
     curses.init_pair(2, curses.COLOR_YELLOW, -1)
-    curses.init_pair(3, curses.COLOR_MAGENTA, -1)
+    curses.init_pair(3, curses.COLOR_MAGENTA, -1)  # also used as "purple"
     curses.init_pair(4, curses.COLOR_RED, -1)
 
     color_pairs = {
@@ -568,6 +604,14 @@ def ncurses_main(stdscr):
     region = config.get("common", "region", fallback="00")
     rssi_min = config.getint("common", "rssi_min", fallback=-80)
     rssi_max = config.getint("common", "rssi_max", fallback=-20)
+    retry_timeout = config.getint("common", "wlan_retry_timeout", fallback=5)
+
+    # PKT + bar settings
+    fec_rec_min  = config.getint("common", "fec_rec_min", fallback=0)
+    fec_rec_max  = config.getint("common", "fec_rec_max", fallback=10)
+    p_lost_min   = config.getint("common", "p_lost_min",  fallback=0)
+    p_lost_max   = config.getint("common", "p_lost_max",  fallback=10)
+    bar_count    = config.getint("common", "bar_count",   fallback=35)
 
     rx_wlans_str = config.get("wlans", "rx_wlans", fallback="").strip()
     tx_wlans_str = config.get("wlans", "tx_wlan",  fallback="").strip()
@@ -586,7 +630,7 @@ def ncurses_main(stdscr):
     tunnel_fec_time = config.get("tunnel", "fec_timeout", fallback="0")
     tunnel_agg_time = config.get("tunnel", "agg_timeout", fallback="5")
     remote_injector = config.get("tunnel", "remote_injector", fallback="")
-    log_interval    = config.get("tunnel", "log_interval", fallback="2000")
+    log_interval_ms = config.getint("tunnel", "log_interval", fallback=2000)
 
     rx_wlans = rx_wlans_str.split() if rx_wlans_str else []
     all_tx_wlans = tx_wlans_str.split() if tx_wlans_str else []
@@ -598,8 +642,12 @@ def ncurses_main(stdscr):
     event_queue.put(("status", f"[DEBUG] rx_wlans = {rx_wlans}"))
     event_queue.put(("status", f"[DEBUG] tx_wlans (all) = {all_tx_wlans}"))
     event_queue.put(("status", f"[DEBUG] remote_injector = '{remote_injector}'"))
-    event_queue.put(("status", f"[DEBUG] log_interval = {log_interval}"))
+    event_queue.put(("status", f"[DEBUG] log_interval_ms={log_interval_ms}"))
     event_queue.put(("status", f"[DEBUG] rssi_min={rssi_min}, rssi_max={rssi_max}"))
+    event_queue.put(("status", f"[DEBUG] fec_rec_min={fec_rec_min}, fec_rec_max={fec_rec_max}"))
+    event_queue.put(("status", f"[DEBUG] p_lost_min={p_lost_min}, p_lost_max={p_lost_max}"))
+    event_queue.put(("status", f"[DEBUG] bar_count={bar_count}"))
+    event_queue.put(("status", f"[DEBUG] wlan_retry_timeout={retry_timeout}"))
 
     # Determine TX adapter
     tx_adapter = None
@@ -627,18 +675,18 @@ def ncurses_main(stdscr):
             return "tx"
         return "unknown"
 
-    # 6. Launch wlan_init.sh for each iface
+    # Launch wlan_init.sh for each iface with retry
     for iface in all_ifaces:
         mode = get_mode(iface)
         t = threading.Thread(
             target=wlan_worker,
-            args=(iface, tx_power, channel, region, bandwidth, mode, event_queue),
+            args=(iface, tx_power, channel, region, bandwidth, mode, event_queue, retry_timeout),
             daemon=True
         )
         t.start()
         threads.append(t)
 
-    # 7. wfb_rx for "video"
+    # wfb_rx for "video"
     wfb_video_cmd = [
         "./wfb_rx",
         "-a", "10000",
@@ -647,7 +695,7 @@ def ncurses_main(stdscr):
         "-u", port,
         "-K", key_path,
         "-R", "2097152",
-        "-l", str(log_interval),
+        "-l", str(log_interval_ms),
         "-i", "7669206"
     ]
     wfb_video_thread = threading.Thread(
@@ -658,7 +706,7 @@ def ncurses_main(stdscr):
     wfb_video_thread.start()
     threads.append(wfb_video_thread)
 
-    # 8. Tunnel
+    # Tunnel
     enable_tunnel = (tx_adapter is not None or remote_injector.strip() != "")
     if enable_tunnel:
         default_injector = "127.0.0.1:11001"
@@ -671,7 +719,7 @@ def ncurses_main(stdscr):
             "-u", "54682",
             "-K", key_path,
             "-R", "2097152",
-            "-l", str(log_interval),
+            "-l", str(log_interval_ms),
             "-i", "7669206"
         ]
         tunnel_tx_cmd = [
@@ -692,7 +740,7 @@ def ncurses_main(stdscr):
             "-F", "0",
             "-i", "7669206",
             "-R", "2097152",
-            "-l", str(log_interval),
+            "-l", str(log_interval_ms),
             "-C", "0",
             final_injector
         ]
@@ -728,10 +776,9 @@ def ncurses_main(stdscr):
         t_tun.start()
         threads.append(t_tun)
     else:
-        # No need to spawn tunnel threads
         event_queue.put(("tunnel", "[TUNNEL DISABLED] No local TX adapter or remote_injector."))
 
-    # Prepare curses windows
+    # Setup curses windows
     stdscr.clear()
     height, width = stdscr.getmaxyx()
 
@@ -764,6 +811,16 @@ def ncurses_main(stdscr):
     tunnel_logs = []
     wfb_rxant_dict = {}
 
+    # We'll keep track of PKT data for fec_rec, p_lost, b_all, b_outgoing
+    last_pkt_data = {
+        "fec_rec": 0,
+        "p_lost":  0,
+        "b_all":   0,
+        "b_out":   0
+    }
+    bitrate_all = 0.0
+    bitrate_out = 0.0
+
     status_header = []
     stats_header  = ["[ASCII RSSI Chart for VIDEO feed (color-coded)]"]
 
@@ -772,49 +829,10 @@ def ncurses_main(stdscr):
 
     tunnel_header_lines = ["[TUNNEL RX COMMAND]:"]
     if enable_tunnel:
-        tunnel_rx_cmd = [
-            "./wfb_rx",
-            "-a", "11001",
-            "-p", "32",
-            "-u", "54682",
-            "-K", key_path,
-            "-R", "2097152",
-            "-l", str(log_interval),
-            "-i", "7669206"
-        ]
         tunnel_header_lines += wrap_command(tunnel_rx_cmd, tunnel_width - 2)
         tunnel_header_lines.append("[TUNNEL TX COMMAND]:")
-        tunnel_tx_cmd = [
-            "./wfb_tx",
-            "-d",
-            "-f", "data",
-            "-p", "160",
-            "-u", "10002",
-            "-K", key_path,
-            "-B", str(tunnel_bw),
-            "-G", "long",
-            "-S", str(tunnel_stbc),
-            "-L", str(tunnel_ldpc),
-            "-M", str(tunnel_mcs),
-            "-k", str(tunnel_fec_k),
-            "-n", str(tunnel_fec_n),
-            "-T", str(tunnel_fec_time),
-            "-F", "0",
-            "-i", "7669206",
-            "-R", "2097152",
-            "-l", str(log_interval),
-            "-C", "0",
-            (remote_injector.strip() if remote_injector.strip() else "127.0.0.1:11001")
-        ]
         tunnel_header_lines += wrap_command(tunnel_tx_cmd, tunnel_width - 2)
         tunnel_header_lines.append("[TUNNEL TUN COMMAND]:")
-        tunnel_tun_cmd = [
-            "./wfb_tun",
-            "-a", "10.5.0.1/24",
-            "-l", "54682",
-            "-u", "10002",
-            "-T", str(tunnel_agg_time)
-        ]
         tunnel_header_lines += wrap_command(tunnel_tun_cmd, tunnel_width - 2)
     else:
         tunnel_header_lines.append("tunnel disabled")
@@ -853,11 +871,40 @@ def ncurses_main(stdscr):
                 wfb_logs.append(text)
                 if len(wfb_logs) > 1000:
                     wfb_logs.pop(0)
-                # Track RX_ANT
                 parts = text.split()
+                # Save RX_ANT lines
                 if len(parts) >= 4 and parts[0] == "RX_ANT":
                     wlan_id = parts[2]
                     wfb_rxant_dict[wlan_id] = text
+                # Parse PKT lines
+                elif len(parts) >= 2 and parts[0] == "PKT":
+                    # PKT p_all:b_all:p_dec_err:p_dec_ok:p_fec_rec:p_lost:p_bad:p_outgoing:b_outgoing
+                    try:
+                        pkt_fields = parts[1].split(":")
+                        if len(pkt_fields) == 9:
+                            p_all      = int(pkt_fields[0])
+                            b_all      = int(pkt_fields[1])
+                            p_dec_err  = int(pkt_fields[2])
+                            p_dec_ok   = int(pkt_fields[3])
+                            fec_rec    = int(pkt_fields[4])
+                            p_lost     = int(pkt_fields[5])
+                            p_bad      = int(pkt_fields[6])
+                            p_outgoing = int(pkt_fields[7])
+                            b_outgoing = int(pkt_fields[8])
+
+                            last_pkt_data["fec_rec"] = fec_rec
+                            last_pkt_data["p_lost"]  = p_lost
+                            last_pkt_data["b_all"]   = b_all
+                            last_pkt_data["b_out"]   = b_outgoing
+
+                            # Compute throughput from b_all / b_out
+                            # log_interval_ms -> convert to seconds
+                            interval_s = float(log_interval_ms) / 1000.0
+                            if interval_s > 0:
+                                bitrate_all = (b_all * 8.0) / interval_s / 1e6
+                                bitrate_out = (b_outgoing * 8.0) / interval_s / 1e6
+                    except ValueError:
+                        pass
 
             elif kind == "tunnel":
                 tunnel_logs.append(text)
@@ -868,13 +915,13 @@ def ncurses_main(stdscr):
         status_win.erase()
         status_win.border()
         leftover_status_lines = MAX_STATUS_LINES - 1 - len(status_header)
-        slice_status = status_logs[-leftover_status_lines:] if leftover_status_lines > 0 else []
         row = 1
         for hl in status_header:
             if row >= MAX_STATUS_LINES:
                 break
             status_win.addstr(row, 1, hl)
             row += 1
+        slice_status = status_logs[-leftover_status_lines:] if leftover_status_lines > 0 else []
         for line in slice_status:
             if row >= MAX_STATUS_LINES:
                 break
@@ -882,29 +929,65 @@ def ncurses_main(stdscr):
             row += 1
         status_win.refresh()
 
-        # Redraw stats window (RSSI chart)
+        # Redraw stats window
         stats_win.erase()
         stats_win.border()
-        chart_lines = generate_rssi_chart(wfb_rxant_dict, rssi_min, rssi_max)
-        leftover_stats_lines = MAX_STATS_LINES - 1 - len(stats_header)
+        leftover_stats_lines = MAX_STATS_LINES - 1
         row = 1
+
+        # Print chart header
         for hl in stats_header:
             if row >= MAX_STATS_LINES:
                 break
             stats_win.addstr(row, 1, hl)
             row += 1
-        for line_str, avg_rssi in chart_lines[-leftover_stats_lines:]:
-            if row >= MAX_STATS_LINES:
+            leftover_stats_lines -= 1
+
+        # Generate RSSI chart
+        chart_lines = generate_rssi_chart(wfb_rxant_dict, rssi_min, rssi_max, bar_count)
+        for line_str, avg_rssi in chart_lines:
+            if leftover_stats_lines <= 0:
                 break
             color_attr = get_rssi_color(avg_rssi, color_pairs)
             stats_win.addstr(row, 1, line_str, color_attr)
             row += 1
+            leftover_stats_lines -= 1
+
+        # If we still have room, show the fec_rec bar
+        if leftover_stats_lines > 0:
+            fec_val = last_pkt_data["fec_rec"]
+            fec_bar = generate_ascii_bar(fec_val, fec_rec_min, fec_rec_max, bar_count)
+            line_str = f"FEC Rec: {fec_val} | {fec_bar}"
+            stats_win.addstr(row, 1, line_str, color_pairs["magenta"])
+            row += 1
+            leftover_stats_lines -= 1
+
+        # Lost bar
+        if leftover_stats_lines > 0:
+            lost_val = last_pkt_data["p_lost"]
+            lost_bar = generate_ascii_bar(lost_val, p_lost_min, p_lost_max, bar_count)
+            line_str = f"Lost   : {lost_val} | {lost_bar}"
+            stats_win.addstr(row, 1, line_str, color_pairs["red"])
+            row += 1
+            leftover_stats_lines -= 1
+
+        # Throughput lines
+        if leftover_stats_lines > 0:
+            stats_win.addstr(row, 1, f"All: {bitrate_all:.2f} mbit/s")
+            row += 1
+            leftover_stats_lines -= 1
+
+        if leftover_stats_lines > 0:
+            stats_win.addstr(row, 1, f"Data out: {bitrate_out:.2f} mbit/s")
+            row += 1
+            leftover_stats_lines -= 1
+
         stats_win.refresh()
 
-        # Bottom-left: WFB (video)
+        # Bottom-left: WFB logs
         draw_window(wfb_win, wfb_header_lines, wfb_logs, bottom_height, wfb_width)
 
-        # Bottom-right: tunnel
+        # Bottom-right: TUNNEL logs
         draw_window(tunnel_win, tunnel_header_lines, tunnel_logs, bottom_height, tunnel_width)
 
         if not alive_threads and event_queue.empty():

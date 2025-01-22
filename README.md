@@ -22,3 +22,5 @@ TODO:
  - Not sure how steamdeck gamescope will handle cairo overlay on top of gstreamer
 - Write a better readme
 add fec_rec and lost in graphs
+
+add wlan reconnect in case the adapter is pulled out or losing connection. reconnect every 3s?

@@ -14,9 +14,6 @@ STOP_EVENT = threading.Event()  # Set when we want to stop all threads
 CHILD_PROCESSES = []            # Track all subprocess.Popen objects
 CTRL_C_TRIGGERED = False        # True if user pressed Ctrl+C
 
-# How many seconds to consider an RX_ANT line "stale"/lost if no updates
-LOST_TIMEOUT = 5.0  # You can make this configurable via config if you like.
-
 def handle_sigint(signum, frame):
     """Signal handler for Ctrl+C (SIGINT)."""
     global CTRL_C_TRIGGERED
@@ -139,69 +136,42 @@ def generate_ascii_bar(value, vmin, vmax, bar_count):
 
 def build_rssi_chart_items(wfb_rxant_dict, rssi_min, rssi_max, bar_count, color_pairs):
     """
-    Builds a list of (line_str, color_attr) for each known antenna,
-    sorted by "lost" first (False => top, True => bottom),
-    then by group (the first 8 hex chars),
-    then by descending RSSI.
-
-    If an antenna is "lost" (no update for LOST_TIMEOUT seconds),
-    color=red, else color based on get_rssi_color().
-
-    Returns a list of (line_str, color_attr).
+    Build a list of (line_str, color_attr) from the stored RX_ANT data,
+    grouping by the first 8 hex characters, then sorting within each group
+    by descending RSSI, and then sorting the groups by group-string ascending.
     """
-    now = time.time()
-    items = []
-
     if not wfb_rxant_dict:
         return [("No RX_ANT data yet...", color_pairs["red"])]
 
+    # Step 1: gather them into a list
+    items = []
+    for wlan_id, avg_rssi in wfb_rxant_dict.items():
+        # 'group' is the first 8 hex characters of the ID
+        group = wlan_id[:8]
+        items.append((wlan_id, group, avg_rssi))
+
+    # Step 2: sort the items:
+    #   first by group ascending,
+    #   then by descending RSSI
+    items.sort(key=lambda x: (x[1], -x[2]))
+
+    # Step 3: build (line_str, color) pairs
+    lines = []
     rng = float(rssi_max - rssi_min)
     if rng < 1.0:
         rng = 1.0
 
-    # Gather info
-    for wlan_id, data in wfb_rxant_dict.items():
-        last_update = data.get("last_update", 0)
-        avg_rssi    = data.get("avg_rssi", -9999)
-        group       = data.get("group", "unknown")
-
-        # Mark lost if time since last_update > LOST_TIMEOUT
-        is_lost = ((now - last_update) > LOST_TIMEOUT)
-
-        items.append({
-            "wlan_id": wlan_id,
-            "group": group,
-            "avg_rssi": avg_rssi,
-            "is_lost": is_lost
-        })
-
-    # Sort: non-lost first (is_lost=False => sorts lower), then by group ascending, then by -avg_rssi
-    # so (False, 'c0a80134', -(-45)) => (False, 'c0a80137', -(-33)) => etc ...
-    items.sort(key=lambda x: (x["is_lost"], x["group"], -x["avg_rssi"]))
-
-    out_lines = []
-    for it in items:
-        wlan_id  = it["wlan_id"]
-        group    = it["group"]
-        avg_rssi = it["avg_rssi"]
-        is_lost  = it["is_lost"]
-
-        # Compute bar length
+    for (wlan_id, group, avg_rssi) in items:
         scale = (avg_rssi - rssi_min) / rng
-        scale = max(0.0, min(1.0, scale))
-        bars = int(scale * bar_count)
+        scale = max(0.0, min(scale, 1.0))
+        bars = int(round(scale * bar_count))
         bar_str = "#" * bars
+
         line_str = f"{wlan_id}: avg={int(avg_rssi)} | {bar_str}"
+        color_attr = get_rssi_color(avg_rssi, color_pairs)
+        lines.append((line_str, color_attr))
 
-        # Choose color
-        if is_lost:
-            color_attr = color_pairs["red"]
-        else:
-            color_attr = get_rssi_color(avg_rssi, color_pairs)
-
-        out_lines.append((line_str, color_attr))
-
-    return out_lines
+    return lines
 
 # --------------------------------------------------------------------------
 # Worker Functions (stderr -> stdout merged)
@@ -574,7 +544,6 @@ def daemon_main():
             except queue.Empty:
                 break
 
-            # Just print to stdout
             print(f"[{kind.upper()}] {text}")
 
         # If no threads left & queue is empty -> done
@@ -698,7 +667,7 @@ def ncurses_main(stdscr):
             return "tx"
         return "unknown"
 
-    # Launch wlan_init.sh for each iface with retry
+    # Launch wlan_init.sh for each iface (with retry)
     for iface in all_ifaces:
         mode = get_mode(iface)
         t = threading.Thread(
@@ -709,7 +678,7 @@ def ncurses_main(stdscr):
         t.start()
         threads.append(t)
 
-    # wfb_rx for "video"
+    # Start wfb_rx for "video"
     wfb_video_cmd = [
         "./wfb_rx",
         "-a", "10000",
@@ -801,6 +770,26 @@ def ncurses_main(stdscr):
     else:
         event_queue.put(("tunnel", "[TUNNEL DISABLED] No local TX adapter or remote_injector."))
 
+    # Buffers
+    status_logs = []
+    wfb_logs = []
+    tunnel_logs = []
+
+    # We'll keep TWO dictionaries:
+    #   wfb_rxant_dict_current => accumulates new RX_ANT lines since last PKT
+    #   wfb_rxant_dict_display => the set we actually show in the ASCII chart
+    wfb_rxant_dict_current = {}
+    wfb_rxant_dict_display = {}
+
+    last_pkt_data = {
+        "fec_rec": 0,
+        "p_lost":  0,
+        "b_all":   0,
+        "b_out":   0
+    }
+    bitrate_all = 0.0
+    bitrate_out = 0.0
+
     # Prepare curses windows
     stdscr.clear()
     height, width = stdscr.getmaxyx()
@@ -828,28 +817,15 @@ def ncurses_main(stdscr):
     tunnel_win.nodelay(True)
     tunnel_win.scrollok(True)
 
-    # Buffers
-    status_logs = []
-    wfb_logs = []
-    tunnel_logs = []
+    MAX_STATUS_LINES = half_height - 2
+    MAX_STATS_LINES  = half_height - 2
+    MAX_WFB_LINES    = bottom_height - 2
+    MAX_TUNNEL_LINES = bottom_height - 2
 
-    # For each antenna: store { last_update, avg_rssi, group }
-    # group = first 8 chars of the wlan_id
-    wfb_rxant_dict = {}
+    curses.curs_set(0)
+    stdscr.nodelay(True)
 
-    # We'll keep track of PKT data for fec_rec, p_lost, b_all, b_outgoing
-    last_pkt_data = {
-        "fec_rec": 0,
-        "p_lost":  0,
-        "b_all":   0,
-        "b_out":   0
-    }
-    bitrate_all = 0.0
-    bitrate_out = 0.0
-
-    status_header = []
-    stats_header  = ["[ASCII RSSI Chart for VIDEO feed (color-coded)]"]
-
+    stats_header = ["[ASCII RSSI Chart for VIDEO feed (latest chunk)]"]
     wfb_header_lines = ["[VIDEO RX COMMAND]:"]
     wfb_header_lines += wrap_command(wfb_video_cmd, wfb_width - 2)
 
@@ -863,13 +839,7 @@ def ncurses_main(stdscr):
     else:
         tunnel_header_lines.append("tunnel disabled")
 
-    MAX_STATUS_LINES = half_height - 2
-    MAX_STATS_LINES  = half_height - 2
-    MAX_WFB_LINES    = bottom_height - 2
-    MAX_TUNNEL_LINES = bottom_height - 2
-
-    curses.curs_set(0)
-    stdscr.nodelay(True)
+    status_header = []
 
     # Main UI loop
     while True:
@@ -898,9 +868,10 @@ def ncurses_main(stdscr):
                 if len(wfb_logs) > 1000:
                     wfb_logs.pop(0)
 
+                # Parse lines
                 parts = text.split()
-                # If it's an RX_ANT line, parse the antenna data
                 if len(parts) >= 4 and parts[0] == "RX_ANT":
+                    # Store new RX_ANT in "current"
                     wlan_id = parts[2]
                     chunk = parts[3].split(':')
                     avg_rssi = -9999.0
@@ -910,18 +881,10 @@ def ncurses_main(stdscr):
                         except ValueError:
                             avg_rssi = -9999.0
 
-                    # Group by first 8 hex chars
-                    group_id = wlan_id[:8]
+                    wfb_rxant_dict_current[wlan_id] = avg_rssi
 
-                    wfb_rxant_dict[wlan_id] = {
-                        "last_update": time.time(),
-                        "avg_rssi": avg_rssi,
-                        "group": group_id
-                    }
-
-                # If it's a PKT line, update fec_rec, p_lost, etc.
                 elif len(parts) >= 2 and parts[0] == "PKT":
-                    # Format: PKT p_all:b_all:p_dec_err:p_dec_ok:p_fec_rec:p_lost:p_bad:p_outgoing:b_outgoing
+                    # We parse PKT
                     try:
                         pkt_fields = parts[1].split(":")
                         if len(pkt_fields) == 9:
@@ -940,13 +903,19 @@ def ncurses_main(stdscr):
                             last_pkt_data["b_all"]   = b_all
                             last_pkt_data["b_out"]   = b_outgoing
 
-                            # Derive throughput from log_interval_ms
                             interval_s = float(log_interval_ms) / 1000.0
                             if interval_s > 0:
                                 bitrate_all = (b_all * 8.0) / interval_s / 1e6
                                 bitrate_out = (b_outgoing * 8.0) / interval_s / 1e6
+
                     except ValueError:
                         pass
+
+                    # Now that we've ended a chunk, move "current" => "display"
+                    wfb_rxant_dict_display = dict(wfb_rxant_dict_current)
+                    wfb_rxant_dict_current.clear()
+
+                    # We'll keep using 'wfb_rxant_dict_display' in the chart
 
             elif kind == "tunnel":
                 tunnel_logs.append(text)
@@ -977,7 +946,7 @@ def ncurses_main(stdscr):
         leftover_stats_lines = MAX_STATS_LINES - 1
         row = 1
 
-        # 1) Print ASCII RSSI Chart header
+        # Print chart header
         for hl in stats_header:
             if row >= MAX_STATS_LINES:
                 break
@@ -985,9 +954,13 @@ def ncurses_main(stdscr):
             row += 1
             leftover_stats_lines -= 1
 
-        # 2) Build & print RSSI lines (sorted + lost detection)
+        # Build RSSI lines from wfb_rxant_dict_display
         rssi_items = build_rssi_chart_items(
-            wfb_rxant_dict, rssi_min, rssi_max, bar_count, color_pairs
+            wfb_rxant_dict_display,
+            rssi_min,
+            rssi_max,
+            bar_count,
+            color_pairs
         )
         for (line_str, color_attr) in rssi_items:
             if leftover_stats_lines <= 0:
@@ -996,7 +969,7 @@ def ncurses_main(stdscr):
             row += 1
             leftover_stats_lines -= 1
 
-        # 3) Print FEC Rec bar
+        # Then FEC Rec bar
         if leftover_stats_lines > 0:
             fec_val = last_pkt_data["fec_rec"]
             fec_bar = generate_ascii_bar(fec_val, fec_rec_min, fec_rec_max, bar_count)
@@ -1005,7 +978,7 @@ def ncurses_main(stdscr):
             row += 1
             leftover_stats_lines -= 1
 
-        # 4) Print Lost bar
+        # Lost bar
         if leftover_stats_lines > 0:
             lost_val = last_pkt_data["p_lost"]
             lost_bar = generate_ascii_bar(lost_val, p_lost_min, p_lost_max, bar_count)
@@ -1014,7 +987,7 @@ def ncurses_main(stdscr):
             row += 1
             leftover_stats_lines -= 1
 
-        # 5) Print throughput lines
+        # Throughput lines
         if leftover_stats_lines > 0:
             stats_win.addstr(row, 1, f"All: {bitrate_all:.2f} mbit/s")
             row += 1

@@ -74,8 +74,7 @@ if [ "$MODE" = "rx" ]; then
 elif [ "$MODE" = "tx" ]; then
   # Placeholder for future TX logic
   echo "Configuring '$WLAN_INTERFACE' for TX mode..."
-  echo "TODO: Insert TX-only commands here"
-  wfb_rx -f -c 127.0.0.1 -u 10001 -p 32 -i 7669206 -R 2097152 "$WLAN_INTERFACE" &
+    wfb_rx -f -c 127.0.0.1 -u 10001 -p 32 -i 7669206 -R 2097152 "$WLAN_INTERFACE" &
   wfb_tx -I 11001 -R 2097152  "$WLAN_INTERFACE" &
   iw dev "$WLAN_INTERFACE" set txpower fixed "$TX_POWER"
   sleep 2
@@ -85,7 +84,6 @@ elif [ "$MODE" = "tx" ]; then
 elif [ "$MODE" = "rx-tx" ]; then
   # Placeholder for combined RX-TX logic
   echo "Configuring '$WLAN_INTERFACE' for RX + TX mode..."
-  echo "TODO: Insert combined logic here"
   wfb_rx -f -c 127.0.0.1 -u 10000 -p 0  -i 7669206 -R 2097152 "$WLAN_INTERFACE" &
   wfb_rx -f -c 127.0.0.1 -u 10001 -p 32 -i 7669206 -R 2097152 "$WLAN_INTERFACE" &
   wfb_tx -I 11001 -R 2097152  "$WLAN_INTERFACE" &

@@ -41,10 +41,16 @@ if command -v nmcli >/dev/null && ! nmcli device show "$WLAN_INTERFACE" | grep -
   sleep 1
 fi
 
+#ubuntu preset
 ip link set "$WLAN_INTERFACE" down
-iw dev "$WLAN_INTERFACE" set monitor none
-iwconfig "$WLAN_INTERFACE" mode monitor
-ifconfig "$WLAN_INTERFACE" up
+#iw dev "$WLAN_INTERFACE" set monitor none
+#iwconfig "$WLAN_INTERFACE" mode monitor
+#ifconfig "$WLAN_INTERFACE" up
+
+#wfb preset
+iw dev phy1-mon0 set monitor otherbss
+ip link set phy1-mon0 up
+
 echo "General interface init done"
 
 # For demonstration, keep all old "rx" logic under `MODE=rx`:

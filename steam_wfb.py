@@ -77,27 +77,19 @@ def parse_video_line(raw_line: str) -> str:
         AND replace any tabs with a single space.
       - Otherwise, leave line as-is (just strip trailing newlines).
     """
-    # 1. Strip trailing newlines only
     line = raw_line.rstrip('\r\n')
-
-    # 2. Split the first two tokens to see if the second is "RX_ANT"/"PKT"
     parts = line.split(None, 2)  # up to 3 chunks
     if len(parts) < 2:
-        return line  # nothing to do
+        return line
 
-    # If second token is "RX_ANT" or "PKT" and first token is digits => remove first token
-    # then also replace tabs with single spaces
     if parts[1] in ["RX_ANT", "PKT"] and parts[0].isdigit():
-        # remove parts[0]
+        # remove parts[0], then also replace tabs
         if len(parts) == 3:
             new_line = parts[1] + " " + parts[2]
         else:
             new_line = parts[1]
-        # Now remove any tabs
-        new_line = new_line.replace('\t', ' ')
-        return new_line
+        return new_line.replace('\t', ' ')
     else:
-        # If it doesn't match, keep the line intact
         return line
 
 def clean_line_keep_timestamp(line: str) -> str:
@@ -131,7 +123,7 @@ def get_rssi_color(avg_rssi, color_pairs):
 def generate_rssi_chart(wfb_rxant_dict, rssi_min, rssi_max):
     """
     Build a list of (line_text, avg_rssi) for each unique ID in wfb_rxant_dict,
-    sorted descending by avg_rssi. line_text might be "c0a8013400000001: avg=-41 | ####"
+    sorted descending by avg_rssi.
     """
     if not wfb_rxant_dict:
         return [("No RX_ANT data yet...", 0)]
@@ -141,7 +133,6 @@ def generate_rssi_chart(wfb_rxant_dict, rssi_min, rssi_max):
     if rng < 1.0:
         rng = 1.0
 
-    # We'll gather items
     items = []
     for wlan_id, entry in wfb_rxant_dict.items():
         parts = entry.split()
@@ -194,7 +185,7 @@ def wlan_worker(interface, tx_power, channel, region, bandwidth, mode, event_que
         process = subprocess.Popen(
             command_list,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,  # merge
+            stderr=subprocess.STDOUT,
             text=True
         )
         CHILD_PROCESSES.append(process)
@@ -218,10 +209,9 @@ def wlan_worker(interface, tx_power, channel, region, bandwidth, mode, event_que
 
 def wfb_rx_worker(command_list, event_queue, tag="wfb"):
     """
-    wfb_rx with merged stderr->stdout.
-    In the "video" feed (tag="wfb"), we parse lines with parse_video_line,
-    removing tabs & first numeric token if "RX_ANT"/"PKT".
-    For other lines, we keep them as is.
+    Generic worker for wfb_rx with merged stderr->stdout.
+    Lines for tag="wfb" are parsed with parse_video_line(),
+    otherwise we just strip trailing newlines.
     """
     try:
         event_queue.put((tag, f"[STARTING] {command_list[0]} (tag={tag})"))
@@ -229,7 +219,7 @@ def wfb_rx_worker(command_list, event_queue, tag="wfb"):
         process = subprocess.Popen(
             command_list,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,  # merge
+            stderr=subprocess.STDOUT,
             text=True
         )
         CHILD_PROCESSES.append(process)
@@ -258,8 +248,8 @@ def wfb_rx_worker(command_list, event_queue, tag="wfb"):
 
 def wfb_tx_worker(command_list, event_queue, tag="tunnel"):
     """
-    wfb_tx with merged stderr->stdout.
-    We keep lines as is, just strip trailing newlines.
+    Generic worker for wfb_tx with merged stderr->stdout.
+    We simply strip trailing newlines and send them to event_queue.
     """
     try:
         event_queue.put((tag, f"[STARTING] {command_list[0]} (tag={tag})"))
@@ -291,7 +281,8 @@ def wfb_tx_worker(command_list, event_queue, tag="tunnel"):
 
 def wfb_tun_worker(command_list, event_queue):
     """
-    wfb_tun with merged stderr->stdout, lines kept as is.
+    Generic worker for wfb_tun with merged stderr->stdout.
+    Lines are stripped and sent to event_queue with tag="tunnel".
     """
     try:
         event_queue.put(("tunnel", "[STARTING] wfb_tun"))
@@ -322,17 +313,242 @@ def wfb_tun_worker(command_list, event_queue):
         event_queue.put(("tunnel", f"[ERROR] wfb_tun: {str(e)}"))
 
 # --------------------------------------------------------------------------
-# ncurses Main
+# Daemon Mode Logic
+# --------------------------------------------------------------------------
+
+def daemon_main():
+    """
+    This version does NOT use ncurses. It simply reads from config, launches
+    the same threads/processes, and prints all logs to stdout until completion.
+    """
+
+    # 1. Load config
+    config = configparser.ConfigParser()
+    config.read("config.cfg")
+
+    # Common
+    ip = config.get("common", "ip_address", fallback="192.168.1.49")
+    port = config.get("common", "port", fallback="5600")
+    region = config.get("common", "region", fallback="00")
+    rssi_min = config.getint("common", "rssi_min", fallback=-80)
+    rssi_max = config.getint("common", "rssi_max", fallback=-20)
+
+    rx_wlans_str = config.get("wlans", "rx_wlans", fallback="").strip()
+    tx_wlans_str = config.get("wlans", "tx_wlan",  fallback="").strip()
+    tx_power     = config.get("wlans", "tx_power", fallback="100")
+    channel      = config.get("wlans", "channel",  fallback="161")
+    bandwidth    = config.get("wlans", "bandwidth",fallback="HT20")
+    key_path     = config.get("common", "key_path", fallback="/etc/gs.key")
+
+    # Tunnel
+    tunnel_bw       = config.get("tunnel", "bandwidth", fallback="20")
+    tunnel_stbc     = config.get("tunnel", "stbc", fallback="1")
+    tunnel_ldpc     = config.get("tunnel", "ldpc", fallback="0")
+    tunnel_mcs      = config.get("tunnel", "mcs", fallback="1")
+    tunnel_fec_k    = config.get("tunnel", "fec_k", fallback="1")
+    tunnel_fec_n    = config.get("tunnel", "fec_n", fallback="2")
+    tunnel_fec_time = config.get("tunnel", "fec_timeout", fallback="0")
+    tunnel_agg_time = config.get("tunnel", "agg_timeout", fallback="5")
+    remote_injector = config.get("tunnel", "remote_injector", fallback="")
+    log_interval    = config.get("tunnel", "log_interval", fallback="2000")
+
+    rx_wlans = rx_wlans_str.split() if rx_wlans_str else []
+    all_tx_wlans = tx_wlans_str.split() if tx_wlans_str else []
+
+    event_queue = queue.Queue()
+    threads = []
+
+    # Debug prints
+    event_queue.put(("status", f"[DEBUG] Daemon mode active."))
+    event_queue.put(("status", f"[DEBUG] rx_wlans = {rx_wlans}"))
+    event_queue.put(("status", f"[DEBUG] tx_wlans (all) = {all_tx_wlans}"))
+    event_queue.put(("status", f"[DEBUG] remote_injector = '{remote_injector}'"))
+    event_queue.put(("status", f"[DEBUG] log_interval = {log_interval}"))
+    event_queue.put(("status", f"[DEBUG] rssi_min={rssi_min}, rssi_max={rssi_max}"))
+
+    # Determine the actual TX adapter (if any)
+    tx_adapter = None
+    if remote_injector.strip():
+        event_queue.put(("status", "[INFO] remote_injector set -> ignoring tx_wlan entirely"))
+    else:
+        if len(all_tx_wlans) > 0:
+            tx_adapter = all_tx_wlans[0]
+            event_queue.put(("status", f"[INFO] Only first TX adapter used => {tx_adapter}"))
+
+    all_ifaces = set(rx_wlans)
+    if tx_adapter:
+        all_ifaces.add(tx_adapter)
+
+    event_queue.put(("status", f"[DEBUG] final all_ifaces = {list(all_ifaces)}"))
+
+    def get_mode(iface):
+        in_rx = iface in rx_wlans
+        is_tx = (iface == tx_adapter)
+        if in_rx and is_tx:
+            return "rx-tx"
+        elif in_rx:
+            return "rx"
+        elif is_tx:
+            return "tx"
+        return "unknown"
+
+    # Launch wlan_init.sh for each interface
+    for iface in all_ifaces:
+        mode = get_mode(iface)
+        t = threading.Thread(
+            target=wlan_worker,
+            args=(iface, tx_power, channel, region, bandwidth, mode, event_queue),
+            daemon=True
+        )
+        t.start()
+        threads.append(t)
+
+    # Start wfb_rx for VIDEO
+    wfb_video_cmd = [
+        "./wfb_rx",
+        "-a", "10000",
+        "-p", "0",
+        "-c", ip,
+        "-u", port,
+        "-K", key_path,
+        "-R", "2097152",
+        "-l", str(log_interval),
+        "-i", "7669206"
+    ]
+    wfb_video_thread = threading.Thread(
+        target=wfb_rx_worker,
+        args=(wfb_video_cmd, event_queue, "wfb"),
+        daemon=True
+    )
+    wfb_video_thread.start()
+    threads.append(wfb_video_thread)
+
+    # TUNNEL logic: only if we have a local TX adapter or a remote_injector
+    enable_tunnel = (tx_adapter is not None or remote_injector.strip() != "")
+    if enable_tunnel:
+        default_injector = "127.0.0.1:11001"
+        final_injector = remote_injector.strip() if remote_injector.strip() else default_injector
+
+        # Build commands
+        tunnel_rx_cmd = [
+            "./wfb_rx",
+            "-a", "10001",
+            "-p", "32",
+            "-u", "54682",
+            "-K", key_path,
+            "-R", "2097152",
+            "-l", str(log_interval),
+            "-i", "7669206"
+        ]
+        tunnel_tx_cmd = [
+            "./wfb_tx",
+            "-d",
+            "-f", "data",
+            "-p", "160",
+            "-u", "0",
+            "-K", key_path,
+            "-B", str(tunnel_bw),
+            "-G", "long",
+            "-S", str(tunnel_stbc),
+            "-L", str(tunnel_ldpc),
+            "-M", str(tunnel_mcs),
+            "-k", str(tunnel_fec_k),
+            "-n", str(tunnel_fec_n),
+            "-T", str(tunnel_fec_time),
+            "-F", "0",
+            "-i", "7669206",
+            "-R", "2097152",
+            "-l", str(log_interval),
+            "-C", "0",
+            final_injector
+        ]
+        tunnel_tun_cmd = [
+            "./wfb_tun",
+            "-a", "10.5.0.1/24",
+            "-l", "10001",
+            "-u", "10002",
+            "-T", str(tunnel_agg_time)
+        ]
+
+        t_rx = threading.Thread(
+            target=wfb_rx_worker,
+            args=(tunnel_rx_cmd, event_queue, "tunnel"),
+            daemon=True
+        )
+        t_rx.start()
+        threads.append(t_rx)
+
+        t_tx = threading.Thread(
+            target=wfb_tx_worker,
+            args=(tunnel_tx_cmd, event_queue, "tunnel"),
+            daemon=True
+        )
+        t_tx.start()
+        threads.append(t_tx)
+
+        t_tun = threading.Thread(
+            target=wfb_tun_worker,
+            args=(tunnel_tun_cmd, event_queue),
+            daemon=True
+        )
+        t_tun.start()
+        threads.append(t_tun)
+    else:
+        # Tunnel disabled
+        event_queue.put(("tunnel", "[TUNNEL DISABLED] No local TX adapter or remote_injector."))
+
+    # Main loop: read from event_queue and print
+    while True:
+        if STOP_EVENT.is_set():
+            # Terminate all child processes
+            for proc in CHILD_PROCESSES:
+                if proc.poll() is None:
+                    proc.terminate()
+            break
+
+        alive_threads = any(t.is_alive() for t in threads)
+
+        # Drain the queue
+        while True:
+            try:
+                kind, text = event_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            # Just print to stdout
+            print(f"[{kind.upper()}] {text}")
+
+        # If no threads left & queue is empty -> done
+        if not alive_threads and event_queue.empty():
+            break
+
+        time.sleep(0.1)
+
+    # Final cleanup
+    print("[STATUS] Executing final cleanup...")
+    try:
+        subprocess.run(["./final_cleanup.sh"], check=False)
+        print("[STATUS] Final cleanup completed.")
+    except Exception as e:
+        print(f"[STATUS] [ERROR] Could not complete final cleanup: {e}")
+
+    if CTRL_C_TRIGGERED:
+        return
+    else:
+        print("[STATUS] All threads have exited. Daemon mode quitting now.")
+
+# --------------------------------------------------------------------------
+# ncurses Main (Interactive Mode)
 # --------------------------------------------------------------------------
 
 def ncurses_main(stdscr):
     curses.start_color()
     curses.use_default_colors()
 
-    # Define color pairs for green=1, yellow=2, magenta=3, red=4
+    # Define color pairs
     curses.init_pair(1, curses.COLOR_GREEN, -1)
     curses.init_pair(2, curses.COLOR_YELLOW, -1)
-    curses.init_pair(3, curses.COLOR_MAGENTA, -1)  # "orange"
+    curses.init_pair(3, curses.COLOR_MAGENTA, -1)
     curses.init_pair(4, curses.COLOR_RED, -1)
 
     color_pairs = {
@@ -346,7 +562,7 @@ def ncurses_main(stdscr):
     config = configparser.ConfigParser()
     config.read("config.cfg")
 
-    # Common stuff + rssi_min/rssi_max
+    # Common stuff
     ip = config.get("common", "ip_address", fallback="192.168.1.49")
     port = config.get("common", "port", fallback="5600")
     region = config.get("common", "region", fallback="00")
@@ -358,9 +574,9 @@ def ncurses_main(stdscr):
     tx_power     = config.get("wlans", "tx_power", fallback="100")
     channel      = config.get("wlans", "channel",  fallback="161")
     bandwidth    = config.get("wlans", "bandwidth",fallback="HT20")
-    key_path      = config.get("common", "key_path", fallback="/etc/gs.key")
+    key_path     = config.get("common", "key_path", fallback="/etc/gs.key")
 
-    # Tunnel config
+    # Tunnel
     tunnel_bw       = config.get("tunnel", "bandwidth", fallback="20")
     tunnel_stbc     = config.get("tunnel", "stbc", fallback="1")
     tunnel_ldpc     = config.get("tunnel", "ldpc", fallback="0")
@@ -372,7 +588,6 @@ def ncurses_main(stdscr):
     remote_injector = config.get("tunnel", "remote_injector", fallback="")
     log_interval    = config.get("tunnel", "log_interval", fallback="2000")
 
-    # 2. Parse WLANS
     rx_wlans = rx_wlans_str.split() if rx_wlans_str else []
     all_tx_wlans = tx_wlans_str.split() if tx_wlans_str else []
 
@@ -386,7 +601,7 @@ def ncurses_main(stdscr):
     event_queue.put(("status", f"[DEBUG] log_interval = {log_interval}"))
     event_queue.put(("status", f"[DEBUG] rssi_min={rssi_min}, rssi_max={rssi_max}"))
 
-    # 3. Determine actual TX adapter
+    # Determine TX adapter
     tx_adapter = None
     if remote_injector.strip():
         event_queue.put(("status", "[INFO] remote_injector set -> ignoring tx_wlan entirely"))
@@ -395,15 +610,12 @@ def ncurses_main(stdscr):
             tx_adapter = all_tx_wlans[0]
             event_queue.put(("status", f"[INFO] Only first TX adapter used => {tx_adapter}"))
 
-    # 4. Build set of all ifaces
+    all_ifaces = set(rx_wlans)
     if tx_adapter:
-        all_ifaces = set(rx_wlans + [tx_adapter])
-    else:
-        all_ifaces = set(rx_wlans)
+        all_ifaces.add(tx_adapter)
 
     event_queue.put(("status", f"[DEBUG] final all_ifaces = {list(all_ifaces)}"))
 
-    # 5. Determine mode
     def get_mode(iface):
         in_rx = iface in rx_wlans
         is_tx = (iface == tx_adapter)
@@ -415,7 +627,7 @@ def ncurses_main(stdscr):
             return "tx"
         return "unknown"
 
-    # 6. Launch wlan_init.sh threads
+    # 6. Launch wlan_init.sh for each iface
     for iface in all_ifaces:
         mode = get_mode(iface)
         t = threading.Thread(
@@ -446,76 +658,80 @@ def ncurses_main(stdscr):
     wfb_video_thread.start()
     threads.append(wfb_video_thread)
 
-    # 8. Tunnel wfb_rx / wfb_tx / wfb_tun
-    default_injector = "127.0.0.1:11001"
-    final_injector = remote_injector.strip() if remote_injector.strip() else default_injector
+    # 8. Tunnel
+    enable_tunnel = (tx_adapter is not None or remote_injector.strip() != "")
+    if enable_tunnel:
+        default_injector = "127.0.0.1:11001"
+        final_injector = remote_injector.strip() if remote_injector.strip() else default_injector
 
-    tunnel_rx_cmd = [
-        "./wfb_rx",
-        "-a", "10001",
-        "-p", "32",
-        "-u", "54682",
-        "-K", key_path,
-        "-R", "2097152",
-        "-l", str(log_interval),
-        "-i", "7669206"
-    ]
-    tunnel_tx_cmd = [
-        "./wfb_tx",
-        "-d",
-        "-f", "data",
-        "-p", "160",
-        "-u", "0",
-        "-K", key_path,
-        "-B", str(tunnel_bw),
-        "-G", "long",
-        "-S", str(tunnel_stbc),
-        "-L", str(tunnel_ldpc),
-        "-M", str(tunnel_mcs),
-        "-k", str(tunnel_fec_k),
-        "-n", str(tunnel_fec_n),
-        "-T", str(tunnel_fec_time),
-        "-F", "0",
-        "-i", "7669206",
-        "-R", "2097152",
-        "-l", str(log_interval),
-        "-C", "0",
-        final_injector
-    ]
-    tunnel_tun_cmd = [
-        "sudo", "./wfb_tun",
-        "-a", "10.5.0.1/24",
-        "-l", "10001",
-        "-u", "10002",
-        "-T", str(tunnel_agg_time)
-    ]
+        tunnel_rx_cmd = [
+            "./wfb_rx",
+            "-a", "10001",
+            "-p", "32",
+            "-u", "54682",
+            "-K", key_path,
+            "-R", "2097152",
+            "-l", str(log_interval),
+            "-i", "7669206"
+        ]
+        tunnel_tx_cmd = [
+            "./wfb_tx",
+            "-d",
+            "-f", "data",
+            "-p", "160",
+            "-u", "0",
+            "-K", key_path,
+            "-B", str(tunnel_bw),
+            "-G", "long",
+            "-S", str(tunnel_stbc),
+            "-L", str(tunnel_ldpc),
+            "-M", str(tunnel_mcs),
+            "-k", str(tunnel_fec_k),
+            "-n", str(tunnel_fec_n),
+            "-T", str(tunnel_fec_time),
+            "-F", "0",
+            "-i", "7669206",
+            "-R", "2097152",
+            "-l", str(log_interval),
+            "-C", "0",
+            final_injector
+        ]
+        tunnel_tun_cmd = [
+            "./wfb_tun",
+            "-a", "10.5.0.1/24",
+            "-l", "10001",
+            "-u", "10002",
+            "-T", str(tunnel_agg_time)
+        ]
 
-    t_rx = threading.Thread(
-        target=wfb_rx_worker,
-        args=(tunnel_rx_cmd, event_queue, "tunnel"),
-        daemon=True
-    )
-    t_rx.start()
-    threads.append(t_rx)
+        t_rx = threading.Thread(
+            target=wfb_rx_worker,
+            args=(tunnel_rx_cmd, event_queue, "tunnel"),
+            daemon=True
+        )
+        t_rx.start()
+        threads.append(t_rx)
 
-    t_tx = threading.Thread(
-        target=wfb_tx_worker,
-        args=(tunnel_tx_cmd, event_queue, "tunnel"),
-        daemon=True
-    )
-    t_tx.start()
-    threads.append(t_tx)
+        t_tx = threading.Thread(
+            target=wfb_tx_worker,
+            args=(tunnel_tx_cmd, event_queue, "tunnel"),
+            daemon=True
+        )
+        t_tx.start()
+        threads.append(t_tx)
 
-    t_tun = threading.Thread(
-        target=wfb_tun_worker,
-        args=(tunnel_tun_cmd, event_queue),
-        daemon=True
-    )
-    t_tun.start()
-    threads.append(t_tun)
+        t_tun = threading.Thread(
+            target=wfb_tun_worker,
+            args=(tunnel_tun_cmd, event_queue),
+            daemon=True
+        )
+        t_tun.start()
+        threads.append(t_tun)
+    else:
+        # No need to spawn tunnel threads
+        event_queue.put(("tunnel", "[TUNNEL DISABLED] No local TX adapter or remote_injector."))
 
-    # ----------------------------------------------------------------------
-    # 9. Prepare curses windows
+    # Prepare curses windows
     stdscr.clear()
     height, width = stdscr.getmaxyx()
 
@@ -542,15 +758,12 @@ def ncurses_main(stdscr):
     tunnel_win.nodelay(True)
     tunnel_win.scrollok(True)
 
-    # Buffers for logs
+    # Buffers
     status_logs = []
     wfb_logs = []
     tunnel_logs = []
-
-    # We store the latest RX_ANT line per ID
     wfb_rxant_dict = {}
 
-    # Headers
     status_header = []
     stats_header  = ["[ASCII RSSI Chart for VIDEO feed (color-coded)]"]
 
@@ -558,11 +771,53 @@ def ncurses_main(stdscr):
     wfb_header_lines += wrap_command(wfb_video_cmd, wfb_width - 2)
 
     tunnel_header_lines = ["[TUNNEL RX COMMAND]:"]
-    tunnel_header_lines += wrap_command(tunnel_rx_cmd, tunnel_width - 2)
-    tunnel_header_lines.append("[TUNNEL TX COMMAND]:")
-    tunnel_header_lines += wrap_command(tunnel_tx_cmd, tunnel_width - 2)
-    tunnel_header_lines.append("[TUNNEL TUN COMMAND]:")
-    tunnel_header_lines += wrap_command(tunnel_tun_cmd, tunnel_width - 2)
+    if enable_tunnel:
+        tunnel_rx_cmd = [
+            "./wfb_rx",
+            "-a", "10001",
+            "-p", "32",
+            "-u", "54682",
+            "-K", key_path,
+            "-R", "2097152",
+            "-l", str(log_interval),
+            "-i", "7669206"
+        ]
+        tunnel_header_lines += wrap_command(tunnel_rx_cmd, tunnel_width - 2)
+        tunnel_header_lines.append("[TUNNEL TX COMMAND]:")
+        tunnel_tx_cmd = [
+            "./wfb_tx",
+            "-d",
+            "-f", "data",
+            "-p", "160",
+            "-u", "0",
+            "-K", key_path,
+            "-B", str(tunnel_bw),
+            "-G", "long",
+            "-S", str(tunnel_stbc),
+            "-L", str(tunnel_ldpc),
+            "-M", str(tunnel_mcs),
+            "-k", str(tunnel_fec_k),
+            "-n", str(tunnel_fec_n),
+            "-T", str(tunnel_fec_time),
+            "-F", "0",
+            "-i", "7669206",
+            "-R", "2097152",
+            "-l", str(log_interval),
+            "-C", "0",
+            (remote_injector.strip() if remote_injector.strip() else "127.0.0.1:11001")
+        ]
+        tunnel_header_lines += wrap_command(tunnel_tx_cmd, tunnel_width - 2)
+        tunnel_header_lines.append("[TUNNEL TUN COMMAND]:")
+        tunnel_tun_cmd = [
+            "./wfb_tun",
+            "-a", "10.5.0.1/24",
+            "-l", "10001",
+            "-u", "10002",
+            "-T", str(tunnel_agg_time)
+        ]
+        tunnel_header_lines += wrap_command(tunnel_tun_cmd, tunnel_width - 2)
+    else:
+        tunnel_header_lines.append("tunnel disabled")
 
     MAX_STATUS_LINES = half_height - 2
     MAX_STATS_LINES  = half_height - 2
@@ -572,11 +827,9 @@ def ncurses_main(stdscr):
     curses.curs_set(0)
     stdscr.nodelay(True)
 
-    # ----------------------------------------------------------------------
-    # 10. Main UI loop
+    # Main UI loop
     while True:
         if STOP_EVENT.is_set():
-            # Terminate all processes
             for proc in CHILD_PROCESSES:
                 if proc.poll() is None:
                     proc.terminate()
@@ -584,7 +837,7 @@ def ncurses_main(stdscr):
 
         alive_threads = any(t.is_alive() for t in threads)
 
-        # Drain event_queue
+        # Drain event queue
         while True:
             try:
                 kind, text = event_queue.get_nowait()
@@ -600,7 +853,7 @@ def ncurses_main(stdscr):
                 wfb_logs.append(text)
                 if len(wfb_logs) > 1000:
                     wfb_logs.pop(0)
-                # If line starts with RX_ANT, store in dict
+                # Track RX_ANT
                 parts = text.split()
                 if len(parts) >= 4 and parts[0] == "RX_ANT":
                     wlan_id = parts[2]
@@ -610,9 +863,8 @@ def ncurses_main(stdscr):
                 tunnel_logs.append(text)
                 if len(tunnel_logs) > 1000:
                     tunnel_logs.pop(0)
-                # If we want to do tunnel RX_ANT storing, do similarly
 
-        # Redraw top-left (status)
+        # Redraw status window
         status_win.erase()
         status_win.border()
         leftover_status_lines = MAX_STATUS_LINES - 1 - len(status_header)
@@ -630,69 +882,68 @@ def ncurses_main(stdscr):
             row += 1
         status_win.refresh()
 
-        # Redraw top-right (stats)
+        # Redraw stats window (RSSI chart)
         stats_win.erase()
         stats_win.border()
-
-        # Build chart lines => [(line_str, avg_rssi), ...], sorted desc
         chart_lines = generate_rssi_chart(wfb_rxant_dict, rssi_min, rssi_max)
         leftover_stats_lines = MAX_STATS_LINES - 1 - len(stats_header)
-
         row = 1
         for hl in stats_header:
             if row >= MAX_STATS_LINES:
                 break
             stats_win.addstr(row, 1, hl)
             row += 1
-
-        # Print them with color
         for line_str, avg_rssi in chart_lines[-leftover_stats_lines:]:
             if row >= MAX_STATS_LINES:
                 break
-            color_attr = get_rssi_color(avg_rssi, {
-                "green": curses.color_pair(1),
-                "yellow": curses.color_pair(2),
-                "magenta": curses.color_pair(3),
-                "red": curses.color_pair(4),
-            })
+            color_attr = get_rssi_color(avg_rssi, color_pairs)
             stats_win.addstr(row, 1, line_str, color_attr)
             row += 1
-
         stats_win.refresh()
 
-        # Bottom-left: video (wfb)
+        # Bottom-left: WFB (video)
         draw_window(wfb_win, wfb_header_lines, wfb_logs, bottom_height, wfb_width)
 
         # Bottom-right: tunnel
         draw_window(tunnel_win, tunnel_header_lines, tunnel_logs, bottom_height, tunnel_width)
 
-        # If no threads left & queue empty -> done
         if not alive_threads and event_queue.empty():
             break
 
         time.sleep(0.1)
 
-    # ----------------------------------------------------------------------
-    # 11. Final cleanup step
+    # Final cleanup
     event_queue.put(("status", "[INFO] Executing final cleanup..."))
     try:
-        subprocess.run(["sudo", "./final_cleanup.sh"], check=False)
+        subprocess.run(["./final_cleanup.sh"], check=False)
         event_queue.put(("status", "[INFO] Final cleanup completed."))
     except Exception as e:
         event_queue.put(("status", f"[ERROR] Could not complete the final cleanup: {e}"))
 
     if CTRL_C_TRIGGERED:
-        return  # Exit immediately if user pressed Ctrl+C
+        return
 
-    # Otherwise, show final logs
     stdscr.nodelay(False)
     stdscr.clear()
     stdscr.addstr(0, 0, "All threads have exited. Press any key to quit.")
     stdscr.refresh()
     stdscr.getch()
 
+# --------------------------------------------------------------------------
+# Main
+# --------------------------------------------------------------------------
+
 def main():
-    curses.wrapper(ncurses_main)
+    # Read config just to check if we're in daemon mode or not
+    config = configparser.ConfigParser()
+    config.read("config.cfg")
+    daemon_str = config.get("common", "daemon", fallback="false").strip().lower()
+    daemon_mode = (daemon_str == "true")
+
+    if daemon_mode:
+        daemon_main()
+    else:
+        curses.wrapper(ncurses_main)
 
 if __name__ == "__main__":
     main()

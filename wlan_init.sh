@@ -48,8 +48,8 @@ ip link set "$WLAN_INTERFACE" down
 #ifconfig "$WLAN_INTERFACE" up
 
 #wfb preset
-iw dev phy1-mon0 set monitor otherbss
-ip link set phy1-mon0 up
+iw dev "$WLAN_INTERFACE" set monitor otherbss
+ip link set "$WLAN_INTERFACE" up
 
 echo "General interface init done"
 

@@ -774,7 +774,7 @@ def ncurses_main(stdscr):
     if enable_tunnel:
         tunnel_rx_cmd = [
             "./wfb_rx",
-            "-a", "10001",
+            "-a", "11001",
             "-p", "32",
             "-u", "54682",
             "-K", key_path,
@@ -811,7 +811,7 @@ def ncurses_main(stdscr):
         tunnel_tun_cmd = [
             "./wfb_tun",
             "-a", "10.5.0.1/24",
-            "-l", "10001",
+            "-l", "11001",
             "-u", "10002",
             "-T", str(tunnel_agg_time)
         ]

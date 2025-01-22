@@ -3,6 +3,12 @@ set -emb
 
 export LC_ALL=C
 
+# Check for root privileges
+if [ "$(id -u)" -ne 0 ]; then
+  echo "This script requires root privileges. Switching to root..."
+  exec sudo bash "$0" "$@"
+fi
+
 # Validate arguments (now expecting 6 total)
 if [ "$#" -ne 6 ]; then
   echo "Usage: $0 <wlan_interface> <tx_power> <channel> <region> <bandwidth> <mode>"
@@ -48,8 +54,8 @@ ip link set "$WLAN_INTERFACE" down
 #ifconfig "$WLAN_INTERFACE" up
 
 #wfb preset
-iw dev "$WLAN_INTERFACE" set monitor otherbss
-ip link set "$WLAN_INTERFACE" up
+iw dev phy1-mon0 set monitor otherbss
+ip link set phy1-mon0 up
 
 echo "General interface init done"
 
@@ -89,4 +95,3 @@ elif [ "$MODE" = "rx-tx" ]; then
   wait -n
 
 fi
-

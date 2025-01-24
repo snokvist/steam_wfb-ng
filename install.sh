@@ -88,10 +88,10 @@ if [[ "$install_shortcuts" == "y" ]]; then
 
   echo "Adding Steam shortcuts..."
   sudo -u deck steamtinkerlaunch addnonsteamgame --appname="Steam WFB_NG Terminal" --exepath="/home/deck/steam_wfb-ng/terminal.sh" --launchoptions="" >/dev/null
-  sudo -u deck steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video only" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video" >/dev/null
-  sudo -u deck steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video+Record" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video+record" >/dev/null
-  sudo -u deck steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video+Audio" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video+audio" >/dev/null
-  sudo -u deck steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video+Audio+Record" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video+audio+record" >/dev/null
+  sudo -u deck steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG SteamFPV" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video" >/dev/null
+  #sudo -u deck steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video+Record" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video+record" >/dev/null
+  #sudo -u deck steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video+Audio" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video+audio" >/dev/null
+  #sudo -u deck steamtinkerlaunch addnonsteamgame --appname="OpenIPC + WFB_NG Video+Audio+Record" --exepath="/home/deck/steam_wfb-ng/fpv.sh" --launchoptions="video+audio+record" >/dev/null
 
   sleep 2
 

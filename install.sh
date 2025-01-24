@@ -32,7 +32,7 @@ fi
 
 # Install necessary system applications
 echo "Installing necessary applications..."
-apts=(python net-tools git gawk make xdotool vim yad libsodium-dev libpcap-dev)
+apts=(python net-tools git gawk make xdotool vim yad libsodium libpcap)
 if pacman -S --noconfirm "${apts[@]}"; then
   echo "Applications installed successfully."
 else

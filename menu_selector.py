@@ -657,7 +657,6 @@ def run_curses_app(original_config, descriptor):
         return None
 
 def main():
-    print("HELLO: If you see this, the script is running at all!")
     # Check descriptor
     if not os.path.exists(DESCRIPTOR_FILE):
         print(f"Descriptor '{DESCRIPTOR_FILE}' not found.")

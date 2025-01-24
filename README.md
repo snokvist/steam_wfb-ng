@@ -26,3 +26,5 @@ add fec_rec and lost in graphs
 add wlan reconnect in case the adapter is pulled out or losing connection. reconnect every 3s? OK
 
 add a config script to ask for wlan choice or continue with current. maybe additional choice for some more? mini configurator from game mode
+
+tiny up antenna graphs, add graphs for mbit in/out?

@@ -19,12 +19,12 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 # Launch Konsole with menu_selector.py
-#sudo konsole -p 'TerminalColumns=170' -p 'TerminalRows=51' -e ./menu_selector.py
-./menu_selector.py
+konsole -p 'TerminalColumns=170' -p 'TerminalRows=51' -e ./menu_selector.py
+#./menu_selector.py
 
 # Launch Konsole with steam_wfb.py
-#sudo konsole -p 'TerminalColumns=170' -p 'TerminalRows=51' -e ./steam_wfb.py &
-sudo ./steam_wfb.py &
+sudo konsole -p 'TerminalColumns=170' -p 'TerminalRows=51' -e ./steam_wfb.py &
+#sudo ./steam_wfb.py &
 
 # Read daemon and gst_pipeline from the config file
 daemon=$(get_config_value common daemon)

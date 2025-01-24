@@ -19,7 +19,7 @@ def print_banner(stdscr, max_y, max_x):
     Print a 10-line ASCII "SteamFPV" banner at the top of the screen in light blue (cyan).
     Attempt to handle smaller terminals by truncating lines that won't fit.
     """
-
+    BANNER_LINES = [
 " ",
 " ",
 " ",

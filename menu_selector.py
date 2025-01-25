@@ -3,8 +3,8 @@ import curses
 import configparser
 import copy
 import os
+import subprocess
 import traceback
-import signal
 
 # 3 special actions:
 SPECIAL_SAVE_STEAMFPV  = "Save and start SteamFPV"
@@ -16,22 +16,22 @@ CONFIG_FILE = "config.cfg"
 
 def print_banner(stdscr, max_y, max_x):
     """
-    Print a 10-line ASCII "SteamFPV" banner at the top of the screen in light blue (cyan).
-    Attempt to handle smaller terminals by truncating lines that won't fit.
+    Print the requested multi-line ASCII banner at the top,
+    in light blue (cyan). Attempt to truncate lines if the
+    terminal is too narrow.
     """
     BANNER_LINES = [
 " ",
 " ",
 " ",
 "   _________ __                        _________________________   ____",
-"  /   _____//  |_  ____ _____    _____ \_   _____/\______   \   \ /   /",
-"  \_____  \\   __\/ __ \\__  \  /     \ |    __)   |     ___/\   Y   / ",
-"  /        \|  | \  ___/ / __ \|  Y Y  \|     \    |    |     \     /  ",
-" /_______  /|__|  \___  >____  /__|_|  /\___  /    |____|      \___/   ",
-"         \/           \/     \/      \/     \/                           ",  
+"  /   _____//  |_  ____ _____    _____ \\_   _____/\\______   \\   \\ /   /",
+"  \\_____  \\\\   __\\/ __ \\\\__  \\  /     \\ |    __)   |     ___/\\   Y   / ",
+"  /        \\|  | \\  ___/ / __ \\|  Y Y  \\|     \\    |    |     \\     /  ",
+" /_______  /|__|  \\___  >____  /__|_|  /\\___  /    |____|      \\___/   ",
+"         \\/           \\/     \\/      \\/     \\/                           ",
 " "
     ]
-    
 
     curses.start_color()
     curses.init_pair(1, curses.COLOR_CYAN, curses.COLOR_BLACK)
@@ -209,6 +209,14 @@ def handle_resize(stdscr):
     stdscr.refresh()
 
 def curses_main(stdscr, original_config, descriptor):
+    """
+    Return a tuple: (config_or_None, action_string)
+    Where action_string can be:
+      - "steamfpv"  => means "Save and start SteamFPV"
+      - "debug"     => means "Save & exit to debug"
+      - "exit"      => means "Exit with current config" (discard)
+      or None if user didn't pick a special action
+    """
     current_config = copy_config(original_config)
 
     curses.curs_set(0)
@@ -217,13 +225,13 @@ def curses_main(stdscr, original_config, descriptor):
     sections = list(current_config.sections())
     menu_items = sections + [
         SPECIAL_SAVE_STEAMFPV,
-        SPECIAL_SAVE_DEBUG,
+        #SPECIAL_SAVE_DEBUG,
         SPECIAL_EXIT_CURRENT
     ]
     idx = 0
 
     while True:
-        # FULL CLEAR to remove any old submenu text:
+        # FULL CLEAR to remove any old submenu text
         stdscr.clear()
 
         # Re-draw ASCII banner at top
@@ -233,7 +241,7 @@ def curses_main(stdscr, original_config, descriptor):
         instructions = "Use D-Pad: UP/DOWN/LEFT/RIGHT. (Right=Select, Ctrl+C=Exit)"
         if len(instructions) > max_x - 1:
             instructions = instructions[:max_x - 1]
-        # Place instructions below banner, say row 12:
+        # Place instructions below banner, e.g. row 12
         row_instruct = 12
         if row_instruct < max_y:
             stdscr.move(row_instruct, 0)
@@ -270,15 +278,21 @@ def curses_main(stdscr, original_config, descriptor):
         elif key == curses.KEY_RIGHT:
             chosen = menu_items[idx]
             if chosen == SPECIAL_SAVE_STEAMFPV:
-                if "common" in current_config:
-                    current_config["common"]["daemon"] = "true"
-                return current_config
-            elif chosen == SPECIAL_SAVE_DEBUG:
+                # daemon=1
                 if "common" in current_config:
                     current_config["common"]["daemon"] = "false"
-                return current_config
+                # We'll return a tuple telling main() we want to do steamfpv
+                return (current_config, "steamfpv")
+
+            elif chosen == SPECIAL_SAVE_DEBUG:
+                # daemon=0
+                if "common" in current_config:
+                    current_config["common"]["daemon"] = "false"
+                return (current_config, "debug")
+
             elif chosen == SPECIAL_EXIT_CURRENT:
-                return None
+                # discard changes
+                return (None, "exit")
             else:
                 edit_section(stdscr, current_config, descriptor, chosen)
         elif key == curses.KEY_LEFT:
@@ -646,17 +660,21 @@ def free_text_input(stdscr, current_val):
             stdscr.refresh()
 
 def run_curses_app(original_config, descriptor):
-    """Wrap curses_main with curses.wrapper but also catch Ctrl+C gracefully."""
+    """
+    We wrap curses_main in try/except to handle Ctrl+C gracefully.
+    Return (config_or_None, action_str).
+    """
     try:
         return curses.wrapper(curses_main, original_config, descriptor)
     except KeyboardInterrupt:
         print("\nUser pressed Ctrl+C. Exiting gracefully (no changes saved).")
-        return None
+        return (None, "exit")
     except Exception as e:
         traceback.print_exc()
-        return None
+        return (None, "exit")
 
 def main():
+    print("HELLO: If you see this, the script is running at all!")
     # Check descriptor
     if not os.path.exists(DESCRIPTOR_FILE):
         print(f"Descriptor '{DESCRIPTOR_FILE}' not found.")
@@ -669,15 +687,17 @@ def main():
     original_config = load_config()
     descriptor = load_descriptor()
 
-    final_config = run_curses_app(original_config, descriptor)
+    final_config, action = run_curses_app(original_config, descriptor)
 
     if final_config is None:
-        print("Exited without saving or was interrupted. No changes applied.")
-    else:
-        write_config(final_config)
-        print("Saved & exited. Changes written.")
+        print("Exited without saving (or was interrupted). No changes applied.")
+        # If action == "debug" or "steamfpv" but final_config is None => user canceled, no scripts
+        return
+
+    # Otherwise, we have a config to save
+    write_config(final_config)
+    print("Saved config to disk.")
 
 
 if __name__ == "__main__":
     main()
-

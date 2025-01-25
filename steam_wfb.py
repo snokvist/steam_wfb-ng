@@ -20,8 +20,16 @@ def handle_sigint(signum, frame):
     CTRL_C_TRIGGERED = True
     STOP_EVENT.set()
 
+def handle_sigterm(signum, frame):
+    """Signal handler for SIGTERM."""
+    global CTRL_C_TRIGGERED
+    CTRL_C_TRIGGERED = True
+    STOP_EVENT.set()
+
+
 # Install the signal handler for Ctrl+C
 signal.signal(signal.SIGINT, handle_sigint)
+signal.signal(signal.SIGTERM, handle_sigterm)
 
 # --------------------------------------------------------------------------
 # Helper to parse the 64-bit WLAN ID into IP + indices

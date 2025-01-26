@@ -213,7 +213,13 @@ def build_rssi_chart_items(wfb_rxant_dict, rssi_min, rssi_max, bar_count, color_
         bar_str = "#" * bar_len
 
         color_attr = get_rssi_color(avg_rssi, color_pairs)
-        line_str = f"{freqchan} {wlan_str} [#{line_count_str}]: avg={int(avg_rssi)} | {bar_str}"
+        line_str = (
+        f"{freqchan:<12}"       # freqchan (left-justified, width=12)
+        f"{wlan_str:<18}"       # parsed IP/antenna (left-justified, width=18)
+        f"[#{line_count_str:<3}]"   # line counter (left-justified, width=3 inside brackets)
+        f": avg={int(avg_rssi):>4} " # 'avg=' plus RSSI (right-justified, width=4)
+        f"| {bar_str}"
+)
         lines.append((line_str, color_attr))
 
     return lines
@@ -622,7 +628,7 @@ def ncurses_main(stdscr):
     tunnel_fec_time = config.get("tunnel", "fec_timeout", fallback="0")
     tunnel_agg_time = config.get("tunnel", "agg_timeout", fallback="5")
     remote_injector = config.get("tunnel", "remote_injector", fallback="")
-    log_interval_ms = config.get("tunnel", "log_interval", fallback=2000)
+    log_interval_ms = config.get("tunnel", "log_interval", fallback="2000")
 
     rx_wlans = rx_wlans_str.split() if rx_wlans_str else []
     all_tx_wlans = tx_wlans_str.split() if tx_wlans_str else []

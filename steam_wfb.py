@@ -622,7 +622,7 @@ def ncurses_main(stdscr):
     tunnel_fec_time = config.get("tunnel", "fec_timeout", fallback="0")
     tunnel_agg_time = config.get("tunnel", "agg_timeout", fallback="5")
     remote_injector = config.get("tunnel", "remote_injector", fallback="")
-    log_interval_ms = config.getint("tunnel", "log_interval", fallback=2000)
+    log_interval_ms = config.get("tunnel", "log_interval", fallback=2000)
 
     rx_wlans = rx_wlans_str.split() if rx_wlans_str else []
     all_tx_wlans = tx_wlans_str.split() if tx_wlans_str else []

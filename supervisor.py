@@ -92,7 +92,6 @@ def main():
 
     steam_wfb_process = subprocess.Popen(
         ["konsole", "--qwindowgeometry", "1280x800", "-e", "sudo ./steam_wfb.py"],
-        #["xterm". "-geometry", "100x44", "-e", "'sudo ./steam_wfb.py'"]
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE
     )

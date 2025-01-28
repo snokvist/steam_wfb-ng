@@ -6,7 +6,7 @@
 #
 # By default, if no argument is passed, it runs the VIDEO pipeline.
 #
-# Usage: ./fpv.sh [video|video+record|video+audio|video+audio+record]
+# Usage: ./fpv.sh [video|video+record|video+audio|video+audio+record] [port]
 ###############################################################################
 
 echo "start: $(date)" >> /tmp/fpv.log
@@ -28,6 +28,9 @@ trap onExit EXIT HUP INT QUIT TERM
 # Default to "video" if no argument is passed
 MODE="${1:-video}"
 
+# Default port is 5600 if no second argument is provided
+PORT="${2:-5600}"
+
 # Function to run the GStreamer pipeline
 run_pipeline() {
     case "$MODE" in
@@ -36,9 +39,9 @@ run_pipeline() {
     # VIDEO pipeline (simple video display, no recording, no audio)
     ###########################################################################
     video)
-        echo "Running VIDEO pipeline"
+        echo "Running VIDEO pipeline on port $PORT"
         gst-launch-1.0 \
-            udpsrc port=5600 ! \
+            udpsrc port=$PORT ! \
             queue max-size-time=1 ! \
             application/x-rtp,payload=97,clock-rate=90000,encoding-name=H265 ! \
             rtpjitterbuffer latency=1 ! \
@@ -51,9 +54,9 @@ run_pipeline() {
     # VIDEO+RECORD pipeline (display and record, no audio)
     ###########################################################################
     video+record)
-        echo "Running VIDEO+RECORD pipeline"
+        echo "Running VIDEO+RECORD pipeline on port $PORT"
         gst-launch-1.0 -e \
-            udpsrc port=5600 ! \
+            udpsrc port=$PORT ! \
             tee name=videoTee \
             videoTee. ! queue ! \
                 application/x-rtp,payload=97,clock-rate=90000,encoding-name=H265 ! \
@@ -73,9 +76,9 @@ run_pipeline() {
     # VIDEO+AUDIO pipeline (display both video and audio)
     ###########################################################################
     video+audio)
-        echo "Running VIDEO+AUDIO pipeline"
+        echo "Running VIDEO+AUDIO pipeline on port $PORT"
         gst-launch-1.0 \
-            udpsrc port=5600 ! \
+            udpsrc port=$PORT ! \
             tee name=t \
                 t. ! queue max-size-time=1 ! \
                     application/x-rtp,payload=97,clock-rate=90000,encoding-name=H265 ! \
@@ -97,9 +100,9 @@ run_pipeline() {
     # VIDEO+AUDIO+RECORD pipeline (display and record both video and audio)
     ###########################################################################
     video+audio+record)
-        echo "Running VIDEO+AUDIO+RECORD pipeline"
+        echo "Running VIDEO+AUDIO+RECORD pipeline on port $PORT"
         gst-launch-1.0 -e \
-            udpsrc port=5600 ! \
+            udpsrc port=$PORT ! \
             tee name=t \
                 t. ! queue ! \
                     application/x-rtp,payload=97,clock-rate=90000,encoding-name=H265 ! \
@@ -136,7 +139,7 @@ run_pipeline() {
     ###########################################################################
     *)
         echo "Invalid mode: '$MODE'"
-        echo "Usage: $0 [video|video+record|video+audio|video+audio+record]"
+        echo "Usage: $0 [video|video+record|video+audio|video+audio+record] [port]"
         exit 1
         ;;
     esac

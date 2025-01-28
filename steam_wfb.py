@@ -400,7 +400,14 @@ def daemon_main():
     tx_power     = config.get("wlans", "tx_power", fallback="100")
     channel      = config.get("wlans", "channel",  fallback="161")
     bandwidth    = config.get("wlans", "bandwidth",fallback="HT20")
-    key_path     = config.get("common", "key_path", fallback="/etc/gs.key")
+    video_key_path = config.get("common", "video_key_path", fallback="/etc/gs.key").strip()
+    tunnel_key_path = config.get("common", "tunnel_key_path", fallback="/etc/gs.key").strip()
+    # Apply fallback if the value is empty after stripping
+    if not video_key_path:
+        video_key_path = "/etc/gs.key"
+    if not tunnel_key_path:
+        tunnel_key_path = "/etc/gs.key"
+
 
     tunnel_bw       = config.get("tunnel", "bandwidth", fallback="20")
     tunnel_stbc     = config.get("tunnel", "stbc", fallback="1")
@@ -461,7 +468,7 @@ def daemon_main():
         "-p", "0",
         "-c", ip,
         "-u", port,
-        "-K", key_path,
+        "-K", video_key_path,
         "-R", "2097152",
         "-l", str(log_interval),
         "-i", "7669206"
@@ -484,7 +491,7 @@ def daemon_main():
             "-a", "10001",
             "-p", "32",
             "-u", "54682",
-            "-K", key_path,
+            "-K", tunnel_key_path,
             "-R", "2097152",
             "-l", str(log_interval),
             "-i", "7669206"
@@ -495,7 +502,7 @@ def daemon_main():
             "-f", "data",
             "-p", "160",
             "-u", "10002",
-            "-K", key_path,
+            "-K", tunnel_key_path,
             "-B", str(tunnel_bw),
             "-G", "long",
             "-S", str(tunnel_stbc),
@@ -617,7 +624,14 @@ def ncurses_main(stdscr):
     tx_power     = config.get("wlans", "tx_power", fallback="100")
     channel      = config.get("wlans", "channel",  fallback="161")
     bandwidth    = config.get("wlans", "bandwidth",fallback="HT20")
-    key_path     = config.get("common", "key_path", fallback="/etc/gs.key")
+    video_key_path = config.get("common", "video_key_path", fallback="/etc/gs.key").strip()
+    tunnel_key_path = config.get("common", "tunnel_key_path", fallback="/etc/gs.key").strip()
+    
+    # Apply fallback if the value is empty after stripping
+    if not video_key_path:
+        video_key_path = "/etc/gs.key"
+    if not tunnel_key_path:
+        tunnel_key_path = "/etc/gs.key"
 
     tunnel_bw       = config.get("tunnel", "bandwidth", fallback="20")
     tunnel_stbc     = config.get("tunnel", "stbc", fallback="1")
@@ -695,7 +709,7 @@ def ncurses_main(stdscr):
         "-p", "0",
         "-c", ip,
         "-u", port,
-        "-K", key_path,
+        "-K", video_key_path,
         "-R", "2097152",
         "-l", str(log_interval_ms),
         "-i", "7669206"
@@ -718,7 +732,7 @@ def ncurses_main(stdscr):
             "-a", "10001",
             "-p", "32",
             "-u", "54682",
-            "-K", key_path,
+            "-K", tunnel_key_path,
             "-R", "2097152",
             "-l", str(log_interval_ms),
             "-i", "7669206"
@@ -729,7 +743,7 @@ def ncurses_main(stdscr):
             "-f", "data",
             "-p", "160",
             "-u", "10002",
-            "-K", key_path,
+            "-K", tunnel_key_path,
             "-B", str(tunnel_bw),
             "-G", "long",
             "-S", str(tunnel_stbc),

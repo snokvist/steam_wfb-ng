@@ -1,4 +1,3 @@
-#!/usr/bin/python3
 import os
 import signal
 import subprocess
@@ -79,22 +78,47 @@ def main():
     # Read the updated config
     config_file = "config.cfg"
     gst_pipeline = "video"  # Default pipeline
+    video_key_path = ""
+    tunnel_key_path = ""
+    wfb_video_passphrase = ""
+    wfb_tunnel_passphrase = ""
+
     if os.path.exists(config_file):
         with open(config_file, "r") as f:
             for line in f:
-                if line.startswith("gst_pipeline"):
-                    gst_pipeline = line.split("=")[-1].strip()
+                key, _, value = line.partition("=")
+                if key.strip() == "gst_pipeline":
+                    gst_pipeline = value.strip()
+                elif key.strip() == "video_key_path":
+                    video_key_path = value.strip()
+                elif key.strip() == "tunnel_key_path":
+                    tunnel_key_path = value.strip()
+                elif key.strip() == "wfb_video_passphrase":
+                    wfb_video_passphrase = value.strip()
+                elif key.strip() == "wfb_tunnel_passphrase":
+                    wfb_tunnel_passphrase = value.strip()
 
-    print(f"DEBUG: Updated gst_pipeline={gst_pipeline}")
+    print(f"DEBUG: gst_pipeline={gst_pipeline}")
+    print(f"DEBUG: video_key_path={video_key_path}, tunnel_key_path={tunnel_key_path}")
+    print(f"DEBUG: wfb_video_passphrase={wfb_video_passphrase}, wfb_tunnel_passphrase={wfb_tunnel_passphrase}")
 
-    # Launch steam_wfb.py
-    print("Launching steam_wfb.py...")
+    # Execute keypair_gs if passphrases are provided
+    if wfb_video_passphrase:
+        print(f"Executing keypair_gs for video...")
+        subprocess.run(["./keypair_gs", wfb_video_passphrase, video_key_path], check=False)
 
-    steam_wfb_process = subprocess.Popen(
-        ["konsole", "--qwindowgeometry", "1280x800", "-e", "sudo ./steam_wfb.py"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
-    )
+    if wfb_tunnel_passphrase:
+        print(f"Executing keypair_gs for tunnel...")
+        subprocess.run(["./keypair_gs", wfb_tunnel_passphrase, tunnel_key_path], check=False)
+
+    # Determine whether to start steam_wfb.py
+    if video_key_path or tunnel_key_path:
+        print("Launching steam_wfb.py...")
+        steam_wfb_process = subprocess.Popen(
+            ["konsole", "--qwindowgeometry", "1280x800", "-e", "sudo ./steam_wfb.py"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
 
     # Launch fpv.sh
     print("Launching fpv.sh...")
@@ -113,7 +137,7 @@ def main():
                 cleanup()
 
             # Check if steam_wfb.py exited unexpectedly
-            if steam_wfb_process.poll() is not None:
+            if steam_wfb_process and steam_wfb_process.poll() is not None:
                 print("steam_wfb.py has exited unexpectedly. Triggering cleanup...")
                 cleanup()
 
@@ -123,3 +147,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

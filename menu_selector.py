@@ -6,10 +6,11 @@ import os
 import subprocess
 import traceback
 
-# 3 special actions:
+# 4 special actions:
 SPECIAL_SAVE_STEAMFPV  = "Save and start SteamFPV"
 SPECIAL_SAVE_DEBUG     = "Save & exit to debug"
 SPECIAL_EXIT_CURRENT   = "Exit with current config"
+SPECIAL_SAVE_BIND      = "Save and bind drone"  # <-- new special item
 
 DESCRIPTOR_FILE = "config_descriptor.ini"
 CONFIG_FILE = "config.cfg"
@@ -34,7 +35,11 @@ def print_banner(stdscr, max_y, max_x):
     ]
 
     curses.start_color()
+    # Pair 1: cyan on black
     curses.init_pair(1, curses.COLOR_CYAN, curses.COLOR_BLACK)
+    # Pair 2: "orange-like" color on black (fall back to yellow if direct orange isn't supported)
+    # Note: Not all terminals support redefining colors. We'll use COLOR_YELLOW as a stand-in for orange.
+    curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLACK)
 
     stdscr.attron(curses.color_pair(1))
     for i, line in enumerate(BANNER_LINES):
@@ -208,6 +213,108 @@ def handle_resize(stdscr):
     stdscr.clear()
     stdscr.refresh()
 
+def confirm_dialog(stdscr, message):
+    """
+    Display a simple "Are you sure?"-style message, with instructions:
+      LEFT => Cancel (False)
+      RIGHT => Confirm (True)
+    """
+    max_y, max_x = stdscr.getmaxyx()
+    stdscr.clear()
+    lines = message.split('\n')
+    for i, line in enumerate(lines):
+        if i < max_y:
+            stdscr.addstr(i, 0, line[:max_x - 1])
+    stdscr.refresh()
+
+    while True:
+        key = stdscr.getch()
+        if key == curses.KEY_RESIZE:
+            handle_resize(stdscr)
+            return False
+        elif key == curses.KEY_LEFT:
+            return False
+        elif key == curses.KEY_RIGHT:
+            return True
+
+def show_script_output(stdscr, stdout_str, stderr_str):
+    """
+    Show the combined stdout/stderr from the script in a scrollable manner if needed,
+    then prompt for a key press to continue.
+    """
+    max_y, max_x = stdscr.getmaxyx()
+    stdscr.clear()
+
+    # Combine output for display
+    combined = []
+    if stdout_str.strip():
+        combined.append("STDOUT:")
+        combined.extend(stdout_str.splitlines())
+    if stderr_str.strip():
+        combined.append("")
+        combined.append("STDERR:")
+        combined.extend(stderr_str.splitlines())
+    if not stdout_str.strip() and not stderr_str.strip():
+        combined.append("(No output)")
+
+    # We'll just do a simple paginated display if there's more lines than fits:
+    line_idx = 0
+    while True:
+        stdscr.clear()
+        # Print a page's worth of lines
+        for row in range(max_y - 2):
+            real_idx = line_idx + row
+            if real_idx >= len(combined):
+                break
+            line = combined[real_idx]
+            stdscr.addstr(row, 0, line[:max_x-1])
+        stdscr.addstr(max_y-2, 0, f"Lines {line_idx+1}-{line_idx+row+1} of {len(combined)}")
+        stdscr.addstr(max_y-1, 0, "Use UP/DOWN to scroll, RIGHT to exit.")
+        stdscr.refresh()
+
+        key = stdscr.getch()
+        if key == curses.KEY_UP:
+            line_idx = max(0, line_idx-1)
+        elif key == curses.KEY_DOWN:
+            if line_idx + (max_y - 2) < len(combined):
+                line_idx += 1
+        elif key == curses.KEY_RIGHT or key == curses.KEY_LEFT:
+            break
+        elif key == curses.KEY_RESIZE:
+            handle_resize(stdscr)
+            # On resize, reset to top
+            line_idx = 0
+
+def run_bind_protocol(stdscr, config):
+    """
+    Confirm, save the config, run the gs_bind.sh script, display output, wait to continue.
+    """
+    # 1) Confirm
+    sure = confirm_dialog(
+        stdscr,
+        "Are you REALLY sure you want to initiate bind protocol with current settings?\n\n"
+        "LEFT=Cancel   RIGHT=Proceed"
+    )
+    if not sure:
+        return  # user canceled
+
+    # 2) Save current config
+    write_config(config)
+
+    # 3) Run the bind script
+    try:
+        result = subprocess.run(["./gs_bind.sh"], capture_output=True, text=True)
+    except Exception as e:
+        # Show the error
+        show_error(stdscr, f"Failed to run ./gs_bind.sh:\n{e}")
+        return
+
+    # 4) Display the output from script
+    stdout_str = result.stdout
+    stderr_str = result.stderr
+    show_script_output(stdscr, stdout_str, stderr_str)
+    # After user presses RIGHT/LEFT from that screen, we return to main menu
+
 def curses_main(stdscr, original_config, descriptor):
     """
     Return a tuple: (config_or_None, action_string)
@@ -223,10 +330,13 @@ def curses_main(stdscr, original_config, descriptor):
     stdscr.keypad(True)
 
     sections = list(current_config.sections())
+
+    # Main menu with the new special bind item at the very end:
     menu_items = sections + [
         SPECIAL_SAVE_STEAMFPV,
-        #SPECIAL_SAVE_DEBUG,
-        SPECIAL_EXIT_CURRENT
+        # SPECIAL_SAVE_DEBUG,  # if you want to re-enable
+        SPECIAL_EXIT_CURRENT,
+        SPECIAL_SAVE_BIND  # <-- appended last
     ]
     idx = 0
 
@@ -262,7 +372,14 @@ def curses_main(stdscr, original_config, descriptor):
             line = prefix + item
             if len(line) > max_x - 1:
                 line = line[:max_x - 1]
-            stdscr.addstr(row, 0, line)
+
+            # If it's the "Save and bind drone" item, use orange-ish color:
+            if item == SPECIAL_SAVE_BIND:
+                stdscr.attron(curses.color_pair(2))
+                stdscr.addstr(row, 0, line)
+                stdscr.attroff(curses.color_pair(2))
+            else:
+                stdscr.addstr(row, 0, line)
 
         stdscr.refresh()
 
@@ -278,14 +395,12 @@ def curses_main(stdscr, original_config, descriptor):
         elif key == curses.KEY_RIGHT:
             chosen = menu_items[idx]
             if chosen == SPECIAL_SAVE_STEAMFPV:
-                # daemon=1
+                # daemon=1 (or "false" => up to your usage) as an example
                 if "common" in current_config:
                     current_config["common"]["daemon"] = "false"
-                # We'll return a tuple telling main() we want to do steamfpv
                 return (current_config, "steamfpv")
 
             elif chosen == SPECIAL_SAVE_DEBUG:
-                # daemon=0
                 if "common" in current_config:
                     current_config["common"]["daemon"] = "false"
                 return (current_config, "debug")
@@ -293,7 +408,17 @@ def curses_main(stdscr, original_config, descriptor):
             elif chosen == SPECIAL_EXIT_CURRENT:
                 # discard changes
                 return (None, "exit")
+
+            elif chosen == SPECIAL_SAVE_BIND:
+                # Perform "Save and bind drone" flow
+                run_bind_protocol(stdscr, current_config)
+                # After returning from run_bind_protocol, user sees main menu again
+                # (We do NOT exit the script, nor do we discard changes)
+                # So just continue the loop
+                pass
+
             else:
+                # It's a section name => edit that section
                 edit_section(stdscr, current_config, descriptor, chosen)
         elif key == curses.KEY_LEFT:
             # do nothing at top-level
@@ -465,8 +590,8 @@ def multi_select_menu(stdscr, valid_opts, selected_set, allow_custom):
                 if chosen in selected_set:
                     selected_set.remove(chosen)
                 else:
-                    if len(selected_set) == 0:
-                        pass
+                    # If user picks something else while <EMPTY> is effectively selected,
+                    # we just add the new item. (No real conflict, but you can handle logic if needed)
                     selected_set.add(chosen)
 
 def toggle_menu_0_1(stdscr, current_val):
@@ -638,6 +763,7 @@ def free_text_input(stdscr, current_val):
         key = stdscr.getch()
         if key == curses.KEY_RESIZE:
             handle_resize(stdscr)
+            curses.noecho()
             return None
         elif key == curses.KEY_LEFT:
             curses.noecho()
@@ -656,6 +782,7 @@ def free_text_input(stdscr, current_val):
             c = chr(key)
             user_input.append(c)
             pos += 1
+            win.clear()
             win.addstr(0, 0, "".join(user_input))
             stdscr.refresh()
 
@@ -694,10 +821,13 @@ def main():
         # If action == "debug" or "steamfpv" but final_config is None => user canceled, no scripts
         return
 
-    # Otherwise, we have a config to save
+    # Otherwise, we have a config to save (in normal "save" scenarios)
+    # But note: if user used "Save and bind drone", the config was
+    # already written inside run_bind_protocol().
+    # We'll still do a final write here in case they ended with steamfpv, etc.
     write_config(final_config)
     print("Saved config to disk.")
 
-
 if __name__ == "__main__":
     main()
+

@@ -50,6 +50,12 @@ else
   exit 1
 fi
 
+#install gqc
+sudo pacman -S libfuse2 -y
+sudo pacman -S libxcb-xinerama0 libxkbcommon-x11-0 libxcb-cursor-dev -y
+wget https://d176tv9ibo4jno.cloudfront.net/latest/QGroundControl.AppImage
+chmod +x QGroundControl.AppImage
+
 # Ask user whether to install Steam shortcuts
 read -p "Do you want to install Steam shortcuts for the application? (y/n): " install_shortcuts
 if [[ "$install_shortcuts" == "y" ]]; then

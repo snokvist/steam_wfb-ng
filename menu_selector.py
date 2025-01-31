@@ -37,8 +37,7 @@ def print_banner(stdscr, max_y, max_x):
     curses.start_color()
     # Pair 1: cyan on black
     curses.init_pair(1, curses.COLOR_CYAN, curses.COLOR_BLACK)
-    # Pair 2: "orange-like" color on black (fall back to yellow if direct orange isn't supported)
-    # Note: Not all terminals support redefining colors. We'll use COLOR_YELLOW as a stand-in for orange.
+    # Pair 2: "orange-like" color on black (we use yellow as a stand-in for orange)
     curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLACK)
 
     stdscr.attron(curses.color_pair(1))
@@ -200,10 +199,15 @@ def validate_value(section, param, new_value, descriptor, config):
     return True, ""
 
 def show_error(stdscr, msg):
+    """
+    Show an error message and wait for one key press.
+    """
+    max_y, max_x = stdscr.getmaxyx()
     stdscr.clear()
-    stdscr.addstr(0, 0, "ERROR:")
-    stdscr.addstr(1, 0, msg)
-    stdscr.addstr(3, 0, "Press any key to continue...")
+    lines = [f"ERROR: {msg}", "", "Press any key to continue..."]
+    for i, line in enumerate(lines):
+        if i < max_y:
+            stdscr.addstr(i, 0, line[:max_x - 1])
     stdscr.refresh()
     stdscr.getch()
 
@@ -257,19 +261,22 @@ def show_script_output(stdscr, stdout_str, stderr_str):
     if not stdout_str.strip() and not stderr_str.strip():
         combined.append("(No output)")
 
-    # We'll just do a simple paginated display if there's more lines than fits:
+    # We'll do a simple paginated display:
     line_idx = 0
     while True:
         stdscr.clear()
         # Print a page's worth of lines
+        last_printed = 0
         for row in range(max_y - 2):
             real_idx = line_idx + row
             if real_idx >= len(combined):
                 break
             line = combined[real_idx]
             stdscr.addstr(row, 0, line[:max_x-1])
-        stdscr.addstr(max_y-2, 0, f"Lines {line_idx+1}-{line_idx+row+1} of {len(combined)}")
-        stdscr.addstr(max_y-1, 0, "Use UP/DOWN to scroll, RIGHT to exit.")
+            last_printed = row
+        stdscr.addstr(max_y-2, 0,
+                      f"Lines {line_idx+1}-{line_idx+last_printed+1} of {len(combined)}")
+        stdscr.addstr(max_y-1, 0, "Use UP/DOWN to scroll, RIGHT/LEFT to exit.")
         stdscr.refresh()
 
         key = stdscr.getch()
@@ -287,7 +294,11 @@ def show_script_output(stdscr, stdout_str, stderr_str):
 
 def run_bind_protocol(stdscr, config):
     """
-    Confirm, save the config, run the gs_bind.sh script, display output, wait to continue.
+    1) Confirm
+    2) Validate tx_wlan (wlans->tx_wlan) + bind_data_folder (common->bind_data_folder)
+    3) If valid, save config + run gs_bind.sh with the first tokens
+    4) Show output
+    5) Return to menu
     """
     # 1) Confirm
     sure = confirm_dialog(
@@ -298,22 +309,39 @@ def run_bind_protocol(stdscr, config):
     if not sure:
         return  # user canceled
 
-    # 2) Save current config
+    # 2) Extract first tokens from tx_wlan and bind_data_folder
+    tx_wlan_val = config.get('wlans', 'tx_wlan', fallback="").strip()
+    bind_folder_val = config.get('common', 'bind_data_folder', fallback="").strip()
+
+    # if either is empty or no tokens => error
+    if not tx_wlan_val:
+        show_error(stdscr, "wlans.tx_wlan is empty! Cannot bind.")
+        return
+    if not bind_folder_val:
+        show_error(stdscr, "common.bind_data_folder is empty! Cannot bind.")
+        return
+
+    tx_wlan_first = tx_wlan_val.split()[0]
+    bind_folder_first = bind_folder_val.split()[0]
+
+    # 3) Save current config
     write_config(config)
 
-    # 3) Run the bind script
+    # 4) Run the bind script with 2 args
     try:
-        result = subprocess.run(["./gs_bind.sh"], capture_output=True, text=True)
+        result = subprocess.run(
+            ["./gs_bind.sh", tx_wlan_first, bind_folder_first],
+            capture_output=True, text=True
+        )
     except Exception as e:
-        # Show the error
         show_error(stdscr, f"Failed to run ./gs_bind.sh:\n{e}")
         return
 
-    # 4) Display the output from script
+    # 5) Display the output from script
     stdout_str = result.stdout
     stderr_str = result.stderr
     show_script_output(stdscr, stdout_str, stderr_str)
-    # After user presses RIGHT/LEFT from that screen, we return to main menu
+    # user then returns to main menu
 
 def curses_main(stdscr, original_config, descriptor):
     """
@@ -395,12 +423,13 @@ def curses_main(stdscr, original_config, descriptor):
         elif key == curses.KEY_RIGHT:
             chosen = menu_items[idx]
             if chosen == SPECIAL_SAVE_STEAMFPV:
-                # daemon=1 (or "false" => up to your usage) as an example
+                # Example tweak: set "daemon" = false
                 if "common" in current_config:
                     current_config["common"]["daemon"] = "false"
                 return (current_config, "steamfpv")
 
             elif chosen == SPECIAL_SAVE_DEBUG:
+                # Another example tweak
                 if "common" in current_config:
                     current_config["common"]["daemon"] = "false"
                 return (current_config, "debug")
@@ -413,8 +442,6 @@ def curses_main(stdscr, original_config, descriptor):
                 # Perform "Save and bind drone" flow
                 run_bind_protocol(stdscr, current_config)
                 # After returning from run_bind_protocol, user sees main menu again
-                # (We do NOT exit the script, nor do we discard changes)
-                # So just continue the loop
                 pass
 
             else:
@@ -590,8 +617,6 @@ def multi_select_menu(stdscr, valid_opts, selected_set, allow_custom):
                 if chosen in selected_set:
                     selected_set.remove(chosen)
                 else:
-                    # If user picks something else while <EMPTY> is effectively selected,
-                    # we just add the new item. (No real conflict, but you can handle logic if needed)
                     selected_set.add(chosen)
 
 def toggle_menu_0_1(stdscr, current_val):
@@ -818,16 +843,11 @@ def main():
 
     if final_config is None:
         print("Exited without saving (or was interrupted). No changes applied.")
-        # If action == "debug" or "steamfpv" but final_config is None => user canceled, no scripts
         return
 
-    # Otherwise, we have a config to save (in normal "save" scenarios)
-    # But note: if user used "Save and bind drone", the config was
-    # already written inside run_bind_protocol().
-    # We'll still do a final write here in case they ended with steamfpv, etc.
+    # In normal scenarios (SteamFPV, debug, etc.) we finalize the config:
     write_config(final_config)
     print("Saved config to disk.")
 
 if __name__ == "__main__":
     main()
-

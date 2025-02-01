@@ -153,9 +153,7 @@ start_bind() {
 	# Handle exit codes
 	case $EXIT_CODE in
     	0)
-        	echo "File received and saved successfully. Continuing execution..."
-        	# Continue with the rest of the script here
-		#unpack files                                                                                                                                                                   
+        	echo "File received and saved successfully. Continuing execution..."                                                                                                                                                                 
         	cd /tmp/bind                                                                                                                                                               
         	gunzip bind.tar.gz
 		tar x -f bind.tar
@@ -165,8 +163,7 @@ start_bind() {
                 	echo $'ERR\tChecksum failed'                                                                                                                                            
                 	exit 0                                                                                                                                                                  
             	fi                                                                                                                                                                          
-                                                                                                                                                                                        
-        	#copy system files to their locations
+
 		if [ -f etc/wfb.yaml ]
 		then
 			cp etc/wfb.yaml /etc/wfb.yaml
@@ -199,8 +196,6 @@ start_bind() {
 			echo "Copy success and execute: custom_script.sh"                                    
                 fi
 
-
-		#cleanup
 		rm -rf /tmp/bind
                                                                                                                              
         	;;

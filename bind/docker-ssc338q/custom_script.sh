@@ -3,7 +3,7 @@
 echo "Put custom commands to be executed in this script."
 
 # Capture the output of the command.
-output=$(wfb-cli -g .broadcast.wfb_passphrase)
+output=$(wfb-cli -g .common.passphrase)
 
 # Check if the output is non-empty.
 if [ -n "$output" ]; then

@@ -143,8 +143,9 @@ run_pipeline() {
         KONSOLE_PID=$!
         wait "$KONSOLE_PID"
         ;;
-        qgc)
+    qgc)
         echo "Running QGC"
+        ./QGroundControl.AppImage
         #konsole --qwindowgeometry 1280x800 -e ./pip.py --mode 3 --listen-keys
         #KONSOLE_PID=$!
         #wait "$KONSOLE_PID"

@@ -6,7 +6,7 @@
 #
 # By default, if no argument is passed, it runs the VIDEO pipeline.
 #
-# Usage: ./fpv.sh [video|video+record|video+audio|video+audio+record] [port]
+# Usage: ./fpv.sh [video|video+record|video+audio|video+audio+record]
 ###############################################################################
 
 echo "start: $(date)" >> /tmp/fpv.log
@@ -14,6 +14,12 @@ echo "start: $(date)" >> /tmp/fpv.log
 # Function to handle cleanup on exit
 onExit() {
     echo "stop: $(date)" >> /tmp/fpv.log
+    # Kill the konsole process if it exists
+    if [[ -n "$KONSOLE_PID" ]]; then
+        kill -TERM "$KONSOLE_PID" 2>/dev/null
+        sleep 1
+        kill -9 "$KONSOLE_PID" 2>/dev/null  # Force kill if still running
+    fi
     # Kill all child processes in this script's process group
     pkill -TERM -P $$ 2>/dev/null
     sleep 1  # Allow processes to terminate gracefully
@@ -28,9 +34,6 @@ trap onExit EXIT HUP INT QUIT TERM
 # Default to "video" if no argument is passed
 MODE="${1:-video}"
 
-# Default port is 5600 if no second argument is provided
-PORT="${2:-5600}"
-
 # Function to run the GStreamer pipeline
 run_pipeline() {
     case "$MODE" in
@@ -39,9 +42,9 @@ run_pipeline() {
     # VIDEO pipeline (simple video display, no recording, no audio)
     ###########################################################################
     video)
-        echo "Running VIDEO pipeline on port $PORT"
+        echo "Running VIDEO pipeline"
         gst-launch-1.0 \
-            udpsrc port=$PORT ! \
+            udpsrc port=5600 ! \
             queue max-size-time=1 ! \
             application/x-rtp,payload=97,clock-rate=90000,encoding-name=H265 ! \
             rtpjitterbuffer latency=1 ! \
@@ -54,9 +57,9 @@ run_pipeline() {
     # VIDEO+RECORD pipeline (display and record, no audio)
     ###########################################################################
     video+record)
-        echo "Running VIDEO+RECORD pipeline on port $PORT"
+        echo "Running VIDEO+RECORD pipeline"
         gst-launch-1.0 -e \
-            udpsrc port=$PORT ! \
+            udpsrc port=5600 ! \
             tee name=videoTee \
             videoTee. ! queue ! \
                 application/x-rtp,payload=97,clock-rate=90000,encoding-name=H265 ! \
@@ -76,9 +79,9 @@ run_pipeline() {
     # VIDEO+AUDIO pipeline (display both video and audio)
     ###########################################################################
     video+audio)
-        echo "Running VIDEO+AUDIO pipeline on port $PORT"
+        echo "Running VIDEO+AUDIO pipeline"
         gst-launch-1.0 \
-            udpsrc port=$PORT ! \
+            udpsrc port=5600 ! \
             tee name=t \
                 t. ! queue max-size-time=1 ! \
                     application/x-rtp,payload=97,clock-rate=90000,encoding-name=H265 ! \
@@ -100,9 +103,9 @@ run_pipeline() {
     # VIDEO+AUDIO+RECORD pipeline (display and record both video and audio)
     ###########################################################################
     video+audio+record)
-        echo "Running VIDEO+AUDIO+RECORD pipeline on port $PORT"
+        echo "Running VIDEO+AUDIO+RECORD pipeline"
         gst-launch-1.0 -e \
-            udpsrc port=$PORT ! \
+            udpsrc port=5600 ! \
             tee name=t \
                 t. ! queue ! \
                     application/x-rtp,payload=97,clock-rate=90000,encoding-name=H265 ! \
@@ -134,12 +137,25 @@ run_pipeline() {
                     mux.
         ;;
 
+    video+pip)
+        echo "Running VIDEO+pip"
+        konsole --qwindowgeometry 1280x800 -e ./pip.py --mode 3 --listen-keys
+        KONSOLE_PID=$!
+        wait "$KONSOLE_PID"
+        ;;
+        qgc)
+        echo "Running QGC"
+        #konsole --qwindowgeometry 1280x800 -e ./pip.py --mode 3 --listen-keys
+        #KONSOLE_PID=$!
+        #wait "$KONSOLE_PID"
+        ;;
+
     ###########################################################################
     # Invalid mode
     ###########################################################################
     *)
         echo "Invalid mode: '$MODE'"
-        echo "Usage: $0 [video|video+record|video+audio|video+audio+record] [port]"
+        echo "Usage: $0 [video|video+record|video+audio|video+audio+record]"
         exit 1
         ;;
     esac

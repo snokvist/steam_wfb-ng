@@ -15,19 +15,20 @@
 #define BUFFER_SIZE 8192
 #define OUTPUT_DIR "/tmp/bind"
 #define OUTPUT_FILE "/tmp/bind/bind.tar.gz"
-#define DEFAULT_LISTEN_DURATION 10  // Default listen duration in seconds
+#define DEFAULT_LISTEN_DURATION 60  // Listen duration in seconds
 
 void print_help() {
-    printf("Usage: wfb_bind_rcv [OPTIONS]\n");
-    printf("Options:\n");
-    printf("  --ip <address>          Set server IP address (default: %s)\n", DEFAULT_SERVER_IP);
-    printf("  --port <number>         Set server port (default: %d)\n", DEFAULT_SERVER_PORT);
-    printf("  --listen-duration <sec> Set duration to listen before closing (default: %d seconds)\n", DEFAULT_LISTEN_DURATION);
-    printf("  --help                  Show this help message\n");
+    fprintf(stderr, "Usage: wfb_bind_rcv [OPTIONS]\n");
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "  --ip <address>          Set server IP address (default: %s)\n", DEFAULT_SERVER_IP);
+    fprintf(stderr, "  --port <number>         Set server port (default: %d)\n", DEFAULT_SERVER_PORT);
+    fprintf(stderr, "  --listen-duration <sec> Set duration to listen before closing (default: %d seconds)\n", DEFAULT_LISTEN_DURATION);
+    fprintf(stderr, "  --force-listen          Continue listening for the full duration even after a successful BIND command\n");
+    fprintf(stderr, "  --help                  Show this help message\n");
 }
 
 /**
- * Ensures /tmp/bind directory exists
+ * Ensures /tmp/bind directory exists.
  */
 void ensure_output_directory() {
     struct stat st = {0};
@@ -39,7 +40,7 @@ void ensure_output_directory() {
     }
 }
 
-// Base64 decoding function
+// Base64 decoding function; writes decoded data to OUTPUT_FILE.
 int base64_decode_and_save(const char *input, size_t input_length) {
     FILE *output_file = fopen(OUTPUT_FILE, "wb");
     if (!output_file) {
@@ -53,9 +54,11 @@ int base64_decode_and_save(const char *input, size_t input_length) {
 
     for (size_t i = 0; i < input_length; i++) {
         char c = input[i];
-        if (c == '=' || c == '\n' || c == '\r') continue;
+        if (c == '=' || c == '\n' || c == '\r')
+            continue;
         char *pos = strchr("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", c);
-        if (pos == NULL) continue;
+        if (pos == NULL)
+            continue;
         val = (val << 6) + (pos - "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/");
         valb += 6;
         if (valb >= 0) {
@@ -76,8 +79,8 @@ int base64_decode_and_save(const char *input, size_t input_length) {
     return 0;
 }
 
-static double elapsed_time_sec(const struct timespec *start)
-{
+// Returns elapsed time (in seconds) since the provided start time.
+static double elapsed_time_sec(const struct timespec *start) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     double seconds = (double)(now.tv_sec - start->tv_sec);
@@ -89,16 +92,15 @@ int main(int argc, char *argv[]) {
     int server_fd;
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_addr_len = sizeof(client_addr);
-    char buffer[BUFFER_SIZE];
-    char command[BUFFER_SIZE], argument[BUFFER_SIZE];
-    ssize_t received_bytes;
     int listen_duration = DEFAULT_LISTEN_DURATION;
     char server_ip[INET_ADDRSTRLEN] = DEFAULT_SERVER_IP;
     int server_port = DEFAULT_SERVER_PORT;
+    int force_listen = 0;  // default is to exit on successful BIND
     struct timespec start_time;
     int file_received = 0;  // Flag to track if a file was received
+    int terminate = 0;      // Flag to signal we should exit after a successful BIND
 
-    // Parse optional arguments
+    // Parse optional arguments.
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0) {
             print_help();
@@ -116,22 +118,33 @@ int main(int argc, char *argv[]) {
                 return 1;
             }
             i++;
+        } else if (strcmp(argv[i], "--force-listen") == 0) {
+            force_listen = 1;
         } else {
             fprintf(stderr, "ERR\tInvalid argument: %s\n", argv[i]);
             return 1;
         }
     }
 
-    printf("INFO\tStarting server on %s:%d for %d seconds\n", server_ip, server_port, listen_duration);
+    // Log startup info to stderr.
+    fprintf(stderr, "INFO\tStarting server on %s:%d for %d seconds\n", server_ip, server_port, listen_duration);
     ensure_output_directory();
 
-    // Create socket
+    // Create socket.
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
         perror("Socket creation failed");
         return 1;
     }
 
-    // Set socket to non-blocking
+    // Allow immediate reuse of the address/port.
+    int opt = 1;
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt(SO_REUSEADDR) failed");
+        close(server_fd);
+        return 1;
+    }
+
+    // Set listening socket to non-blocking.
     int flags = fcntl(server_fd, F_GETFL, 0);
     if (flags == -1) {
         perror("fcntl(F_GETFL) failed");
@@ -144,7 +157,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Bind
+    // Bind.
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = inet_addr(server_ip);
@@ -156,82 +169,113 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Listen
+    // Listen.
     if (listen(server_fd, 5) == -1) {
         perror("Listening failed");
         close(server_fd);
         return 1;
     }
 
-    // Use monotonic clock to track start time
+    // Use monotonic clock to track start time.
     clock_gettime(CLOCK_MONOTONIC, &start_time);
 
-    // Main loop
+    // Main loop: accept new client connections until listen_duration expires or termination is requested.
     while (1) {
         double diff = elapsed_time_sec(&start_time);
         if (diff >= listen_duration) {
-            printf("INFO\tListen duration expired\n");
+            fprintf(stderr, "INFO\tListen duration expired\n");
+            break;
+        }
+        if (terminate) {
+            fprintf(stderr, "INFO\tSuccessful BIND received; exiting as per default behavior\n");
             break;
         }
 
-        // Try accepting a client
         int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_addr_len);
         if (client_fd == -1) {
-            // If there's no incoming connection, sleep a bit and continue
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 usleep(100000); // sleep 0.1s
                 continue;
             } else {
                 perror("Accept failed");
-                // We'll keep listening in case it was just a transient error
                 usleep(100000);
                 continue;
             }
         }
 
-        printf("INFO\tClient connected\n");
+        fprintf(stderr, "INFO\tClient connected\n");
 
-        // Process client data
-        while ((received_bytes = recv(client_fd, buffer, sizeof(buffer) - 1, 0)) > 0) {
-            buffer[received_bytes] = '\0';
-
-            // Attempt to parse command + argument
-            // If only 1 token was read, 'argument' might be uninitialized
-            // So be careful. Initialize them to empty strings each time.
-            memset(command, 0, sizeof(command));
-            memset(argument, 0, sizeof(argument));
-
-            int tokens = sscanf(buffer, "%s %[^\t\n]", command, argument);
-
-            if (tokens < 1) {
-                fprintf(stderr, "ERR\tInvalid command format\n");
-                send(client_fd, "ERR\tInvalid command format\n", 27, 0);
-                break;  // Break from reading this client, but keep server running
-            }
-
-            if (strcmp(command, "VERSION") == 0) {
-                send(client_fd, "OK\tOpenIPC bind v0.1\n", 21, 0);
-            } 
-            else if (strcmp(command, "BIND") == 0) {
-                file_received = 1;  // Mark that a file was received
-                if (base64_decode_and_save(argument, strlen(argument)) == 0) {
-                    send(client_fd, "OK\n", 3, 0);
-                } else {
-                    send(client_fd, "ERR\tFailed to process data\n", 27, 0);
-                }
-            } 
-            else {
-                send(client_fd, "ERR\tUnknown command\n", 21, 0);
+        // Reset accepted socket to blocking mode.
+        {
+            int client_flags = fcntl(client_fd, F_GETFL, 0);
+            if (client_flags != -1) {
+                client_flags &= ~O_NONBLOCK;
+                fcntl(client_fd, F_SETFL, client_flags);
             }
         }
 
-        close(client_fd);
-        printf("INFO\tClient disconnected\n");
+        // Wrap the accepted socket with a FILE* stream for line-based I/O.
+        FILE *client_file = fdopen(client_fd, "r+");
+        if (!client_file) {
+            perror("fdopen failed");
+            close(client_fd);
+            continue;
+        }
+
+        // Use getline() to allow for very long input lines (up to 2 MB or more)
+        char *line = NULL;
+        size_t linecap = 0;
+        while (getline(&line, &linecap, client_file) != -1) {
+            // Remove trailing newline if present.
+            size_t len = strlen(line);
+            if (len > 0 && line[len - 1] == '\n')
+                line[len - 1] = '\0';
+
+            // Parse the command and argument by splitting on the first whitespace (or tab).
+            char *cmd = line;
+            char *arg = NULL;
+            char *sep = strpbrk(line, " \t");
+            if (sep != NULL) {
+                *sep = '\0';
+                arg = sep + 1;
+                while (*arg == ' ' || *arg == '\t') {
+                    arg++;
+                }
+            }
+
+            if (strcmp(cmd, "VERSION") == 0) {
+                fprintf(client_file, "OK\tOpenIPC bind v0.1\n");
+                fflush(client_file);
+            } else if (strcmp(cmd, "BIND") == 0) {
+                if (arg == NULL) {
+                    fprintf(client_file, "ERR\tMissing argument for BIND command\n");
+                    fflush(client_file);
+                    continue;
+                }
+                file_received = 1;
+                fprintf(stderr, "DEBUG: Received BIND command with base64 length: %zu\n", strlen(arg));
+                if (base64_decode_and_save(arg, strlen(arg)) == 0) {
+                    fprintf(client_file, "OK\n");
+                } else {
+                    fprintf(client_file, "ERR\tFailed to process data\n");
+                }
+                fflush(client_file);
+                if (!force_listen) {
+                    terminate = 1;
+                    break;  // Break out of this connection's loop.
+                }
+            } else {
+                fprintf(client_file, "ERR\tUnknown command\n");
+                fflush(client_file);
+            }
+        }
+        free(line);
+        fclose(client_file);
+        fprintf(stderr, "INFO\tClient disconnected\n");
     }
 
     close(server_fd);
 
-    // If timeout expired and no file was received, return exit code 5
     if (!file_received) {
         return 5;
     }

@@ -1,0 +1,309 @@
+#!/bin/sh
+wfb_key=/etc/drone.key
+wfb_dev=wlan0
+
+wfb_yaml() {
+	if [ -e "$1" ]; then
+		while IFS=": " read -r key value; do
+			value=$(eval echo $value)
+			export "$key=$value"
+		done < "$1"
+	fi
+}
+
+load_config() {
+	wfb_yaml /rom/etc/wfb.yaml
+	wfb_yaml /etc/wfb.yaml
+
+	if [ ! -e "$wfb_key" ]; then
+		wfb_key=/rom/etc/drone.key
+	fi
+}
+
+load_modules() {
+	for card in $(lsusb | awk '{print $6}' | sort | uniq); do
+		case "$card" in
+			"0bda:8812" | "0bda:881a" | "0b05:17d2" | "2357:0101" | "2604:0012")
+				driver=88XXau
+				modprobe "$driver"
+				;;
+
+			"0bda:a81a")
+				driver=8812eu
+				modprobe "$driver" rtw_regd_src=1 rtw_tx_pwr_by_rate=0 rtw_tx_pwr_lmt_enable=0
+				;;
+
+			"0bda:f72b" | "0bda:b733")
+				driver=8733bu
+				modprobe "$driver" rtw_regd_src=1 rtw_tx_pwr_by_rate=0 rtw_tx_pwr_lmt_enable=0
+				;;
+		esac
+	done
+
+	if [ -z "$driver" ]; then
+		echo "- Wireless module not detected!"
+		exit 1
+	else
+		echo "- Detected driver: $driver"
+	fi
+
+	if ! ifconfig "$wfb_dev" up; then
+		echo "- Wireless driver not found!"
+		exit 1
+	fi
+}
+
+load_interface() {
+	iw "$wfb_dev" set monitor none
+	iw "$wfb_dev" set channel "$channel" "$mode"
+	iw reg set 00
+
+	if [ "$driver" = "88XXau" ]; then
+		iw "$wfb_dev" set txpower fixed $((txpower * -100))
+	else
+		iw "$wfb_dev" set txpower fixed $((txpower * 50))
+	fi
+
+	case "$mode" in
+		"HT20")
+			bandwidth=20
+			;;
+		"HT40+" | "HT40-")
+			bandwidth=40
+			;;
+	esac
+}
+
+load_bind_interface() {                                                                                                                    
+        iw "$wfb_dev" set monitor none                                                                                                
+        iw "$wfb_dev" set channel 165 HT20                                                                                  
+        iw reg set 00                                                                                                                 
+                                                                                                                                      
+        if [ "$driver" = "88XXau" ]; then                                                                                             
+                iw "$wfb_dev" set txpower fixed $((txpower * -100))                                                                   
+        else                                                                                                                          
+                iw "$wfb_dev" set txpower fixed $((txpower * 50))                                                                     
+        fi                                                                                                                            
+                                                                                                                                      
+        case "$mode" in                                                                                                               
+                "HT20")                                                                                                               
+                        bandwidth=20                                                                                                  
+                        ;;                                                                                                            
+                "HT40+" | "HT40-")                                                                                                    
+                        bandwidth=40                                                                                                  
+                        ;;                                                                                                            
+        esac                                                                                                                          
+}
+
+
+start_broadcast() {
+	echo "- Starting wfb_tx"
+	wfb_tx -K "$wfb_key" -M "$wfb_index" -B "$bandwidth" -C 8000 \
+		-k "$fec_k" -n "$fec_n" -i "$link_id" "$wfb_dev" &> /dev/null &
+}
+
+start_tunnel() {
+	echo "- Starting wfb_tun"
+	wfb_rx -p 160 -u 5800 -K "$wfb_key" -i "$link_id" "$wfb_dev" &> /dev/null &
+	wfb_tx -p 32 -u 5801 -K "$wfb_key" -M "$tun_index" \
+		-k "$fec_k" -n "$fec_n" -i "$link_id" "$wfb_dev" &> /dev/null &
+	wfb_tun -a 10.5.0.10/24 > /dev/null &
+}
+
+start_telemetry() {
+	if [ "$(ipcinfo -c)" = "ssc33x" ]; then
+		devmem 0x1F207890 16 0x8
+	fi
+
+	if [ "$router" = "msposd" ]; then
+		echo "- Starting $router"
+		size=$(curl -s localhost/api/v1/config.json | jsonfilter -e "@.video0.size")
+		msposd --baudrate 115200 --channels 8 --ahi 0 -osd -r "$osd_fps" \
+			--master "$serial" --out 10.5.0.1:14551 --size "${size:-1280x720}" > /dev/null &
+	elif [ "$router" = "mavfwd" ]; then
+		echo "- Starting $router"
+		mavfwd --baudrate 115200 --channels 8 -p 100 -a 15 -t \
+			--master "$serial" --in 0.0.0.0:14550 --out 10.5.0.1:14551 > /dev/null &
+	fi
+}
+
+start_bind() {
+	echo "- Starting bind process"
+	
+	if ! [ -f /etc/bind.key ]
+	then
+		# Default bind key
+		echo "OoLVgEYyFofg9zdhfYPks8/L8fqWaF9Jk8aEnynFPsXNqhSpRCMbVKBFP4fCEOv5DGcbXmUHV5eSykAbFB70ew==" | base64 -d > /etc/bind.key
+	fi
+	
+	echo "- Starting wfb_tun"
+	wfb_rx -p 255 -u 5800 -K /etc/bind.key -i 10531917 "$wfb_dev" &> /dev/null &
+	wfb_tx -p 127 -u 5801 -K /etc/bind.key -M 1 -S 0 -L 0 \
+		-k 1 -n 2 -i 10531917 "$wfb_dev" &> /dev/null &
+	wfb_tun -a 10.5.99.2/24 &
+	
+	#Sleep needed for wfb_tun to initialize, dont remove it!
+	sleep 4
+	 
+	drone_bind --listen-duration 15 
+	EXIT_CODE=$?
+
+	echo "drone_bind exited with code $EXIT_CODE"
+
+	# Handle exit codes
+	case $EXIT_CODE in
+    	0)
+        	echo "File received and saved successfully. Continuing execution..."
+        	# Continue with the rest of the script here
+		#unpack files                                                                                                                                                                   
+        	cd /tmp/bind                                                                                                                                                               
+        	gunzip bind.tar.gz
+		tar x -f bind.tar
+		cd bind
+        	if ! [ -f checksum.txt ] || ! sha1sum -c checksum.txt                                                                                                 
+            	then                                                                                                                                                                        
+                	echo $'ERR\tChecksum failed'                                                                                                                                            
+                	exit 0                                                                                                                                                                  
+            	fi                                                                                                                                                                          
+                                                                                                                                                                                        
+        	#copy system files to their locations
+		if [ -f etc/wfb.yaml ]
+		then
+			cp etc/wfb.yaml /etc/wfb.yaml
+			echo "Copy success: /etc/wfb.yaml"
+		fi
+
+                if [ -f etc/sensors/ ]                                                                                                                                                  
+                then                                                                                                                                                                    
+                        cp etc/sensors/* /etc/sensors/                                                                                                                                  
+                        echo "Copy success: Sensor bins"                                                                                                                                
+                fi 
+
+		if [ -f etc/majestic.yaml ]
+                then                                                            
+                        cp etc/majestic.yaml /etc/majestic.yaml
+			/etc/init.d/S95majestic restart                                         
+                        echo "Copy & restart success: /etc/majestic.yaml"                      
+                fi
+                
+		if [ -f lib/modules/4.9.84/sigmastar/sensor_imx335_mipi.ko ]                                     
+                then                                                            
+                        cp lib/modules/4.9.84/sigmastar/sensor_imx335_mipi.ko /lib/modules/4.9.84/sigmastar/sensor_imx335_mipi.ko                 
+                        echo "Copy success (restart required): lib/modules/4.9.84/sigmastar/sensor_imx335_mipi.ko"       
+                fi
+
+		if [ -f ./custom_script.sh ]                                                                          
+                then                                                                                                                                  
+                        chmod +x ./custom_script.sh
+			./custom_script.sh
+			echo "Copy success and execute: custom_script.sh"                                    
+                fi
+
+
+		#cleanup
+		rm -rf /tmp/bind
+                                                                                                                             
+        	;;
+    	5)
+        	echo "No file received within time limit. Exiting gracefully."
+        	#exit 5
+        ;;
+    	1)
+        	echo "Fatal error: Socket creation or binding failed, or invalid listen duration argument. Exiting."
+        	#exit 1
+        ;;
+    	2)
+        	echo "Error: Base64 decoding failure. Exiting."
+        	#exit 2
+        ;;
+    	3)
+        	echo "Error: Invalid command format received. Exiting."
+        	#exit 3
+        ;;
+    	4)
+        	echo "Error: Unknown command received. Exiting."
+        	#exit 4
+        ;;
+    	*)
+        	echo "Unexpected error occurred. Exiting with code $EXIT_CODE."
+        	#exit $EXIT_CODE
+        ;;
+	esac	
+
+
+echo "Exiting drone_bind"
+
+}
+
+video_settings() {
+	if [ "$(ipcinfo -s)" = "imx415" ]; then
+		cli -s .isp.sensorConfig /etc/sensors/imx415_fpv.bin
+	fi
+	cli -s .isp.exposure 5
+	cli -s .video0.fps 60
+	cli -s .video0.codec h265
+	cli -s .video0.rcMode cbr
+	cli -s .outgoing.enabled true
+	cli -s .outgoing.server udp://0.0.0.0:5600
+}
+
+start() {
+	load_config
+	load_modules
+	load_interface
+
+	if [ ! -e /etc/system.ok ]; then
+		sleep 1
+		video_settings
+		touch /etc/system.ok
+		killall -1 majestic
+	fi
+
+	start_broadcast
+	start_tunnel
+	start_telemetry
+}
+
+bind() {
+	load_config
+	load_modules
+	load_bind_interface
+	start_bind
+
+}
+
+stop() {
+	killall -q wfb_rx
+	killall -q wfb_tx
+	killall -q wfb_tun
+	killall -q msposd
+	killall -q mavfwd
+}
+
+case "$1" in
+	start|stop)
+		$1
+		;;
+
+	restart|reload)
+		stop
+		start
+		;;
+
+	reset)
+		cp -f /rom/etc/majestic.yaml /etc/majestic.yaml
+		cp -f /rom/etc/wfb.yaml /etc/wfb.yaml
+		video_settings
+		;;
+		
+	bind)
+		stop
+		bind
+		stop
+		start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart|reload|reset}"
+		exit 1
+		;;
+esac

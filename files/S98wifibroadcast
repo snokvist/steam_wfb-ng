@@ -145,7 +145,7 @@ start_bind() {
 	#Sleep needed for wfb_tun to initialize, dont remove it!
 	sleep 4
 	 
-	drone_bind --listen-duration 15 
+	drone_bind --listen-duration 10
 	EXIT_CODE=$?
 
 	echo "drone_bind exited with code $EXIT_CODE"

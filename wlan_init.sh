@@ -71,7 +71,9 @@ elif [ "$MODE" = "tx" ]; then
   iw dev "$WLAN_INTERFACE" set channel "$CHANNEL" "$BANDWIDTH"
     wfb_rx -f -c 127.0.0.1 -u 10001 -p 32 -i 7669206 -R 2097152 "$WLAN_INTERFACE" &
   wfb_tx -I 11001 -R 2097152  "$WLAN_INTERFACE" &
-  iw dev "$WLAN_INTERFACE" set txpower fixed "$TX_POWER"
+  if ! iw dev "$WLAN_INTERFACE" set txpower fixed "$TX_POWER"; then
+  	echo "Error initializing TX power"
+  fi
   sleep 2
   echo "Done (TX mode)."
   wait -n
@@ -83,7 +85,9 @@ elif [ "$MODE" = "rx-tx" ]; then
   wfb_rx -f -c 127.0.0.1 -u 10000 -p 0  -i 7669206 -R 2097152 "$WLAN_INTERFACE" &
   wfb_rx -f -c 127.0.0.1 -u 10001 -p 32 -i 7669206 -R 2097152 "$WLAN_INTERFACE" &
   wfb_tx -I 11001 -R 2097152  "$WLAN_INTERFACE" &
-  iw dev "$WLAN_INTERFACE" set txpower fixed "$TX_POWER"
+  if ! iw dev "$WLAN_INTERFACE" set txpower fixed "$TX_POWER"; then
+  	echo "Error initializing TX power"
+  fi
   sleep 2
   echo "Done (RX-TX mode)."
   wait -n
@@ -96,7 +100,9 @@ elif [ "$MODE" = "rx-tx" ]; then
   wfb_tx -p 255 -u 5801 -K ./files/bind.key -M 1 -S 0 -L 0 -k 1 -n 2 -i 10531917 "$WLAN_INTERFACE" &> /dev/null &                                                                       
   wfb_tun -a 10.5.99.1/24 &
   #&> /dev/null
-  iw dev "$WLAN_INTERFACE" set txpower fixed "$TX_POWER"
+  if ! iw dev "$WLAN_INTERFACE" set txpower fixed "$TX_POWER"; then
+  	echo "Error initializing TX power"
+  fi
   sleep 1
   echo "Done (BIND mode). All processes cleaned."
   wait -n

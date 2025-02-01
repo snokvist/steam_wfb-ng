@@ -1,10 +1,10 @@
-#!/bin/sh
+#!/bin/bash
 
-./wlan_init.sh $1 100 165 00 20 bind 
-
-#do stuff
-
-
+echo "Calling wlan_init.sh"
+./wlan_init.sh "$1" 100 165 US HT20 bind &
+sleep 3
+#do stuff $2 =  bind_data_folder
+echo "Starting SEND: "
+./connect.py $2
 ./final_cleanup.sh
-
 exit 0

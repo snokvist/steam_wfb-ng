@@ -10,16 +10,14 @@ import traceback
 SPECIAL_SAVE_STEAMFPV  = "Save and start SteamFPV"
 SPECIAL_SAVE_DEBUG     = "Save & exit to debug"
 SPECIAL_EXIT_CURRENT   = "Exit with current config"
-SPECIAL_SAVE_BIND      = "Save and bind drone"  # <-- new special item
+SPECIAL_SAVE_BIND      = "Save and bind drone"
 
 DESCRIPTOR_FILE = "config_descriptor.ini"
 CONFIG_FILE = "config.cfg"
 
 def print_banner(stdscr, max_y, max_x):
     """
-    Print the requested multi-line ASCII banner at the top,
-    in light blue (cyan). Attempt to truncate lines if the
-    terminal is too narrow.
+    Print a multi-line ASCII banner at the top, in light blue (cyan).
     """
     BANNER_LINES = [
 " ",
@@ -33,12 +31,9 @@ def print_banner(stdscr, max_y, max_x):
 "         \\/           \\/     \\/      \\/     \\/                           ",
 " "
     ]
-
     curses.start_color()
-    # Pair 1: cyan on black
-    curses.init_pair(1, curses.COLOR_CYAN, curses.COLOR_BLACK)
-    # Pair 2: "orange-like" color on black (we use yellow as a stand-in for orange)
-    curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLACK)
+    curses.init_pair(1, curses.COLOR_CYAN, curses.COLOR_BLACK)  # banner color
+    curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLACK)  # "orange" item
 
     stdscr.attron(curses.color_pair(1))
     for i, line in enumerate(BANNER_LINES):
@@ -92,6 +87,9 @@ def parse_range(range_str):
         return None, None
 
 def validate_constraint(new_val_str, constraint_str, section, param, config, descriptor):
+    """
+    Handle cross-field constraints, e.g. param < otherParam
+    """
     try:
         operator, other_param = constraint_str.split()
     except ValueError:
@@ -132,21 +130,19 @@ def validate_value(section, param, new_value, descriptor, config):
     desc = descriptor.get(section, {}).get(param, {})
     ptype = desc.get('type','string').lower()
 
-    # Empty => allowed
     if new_value.strip() == "":
-        return True, ""
+        return True, ""  # empty is allowed
 
-    # Type checks
     if ptype in ('integer','integer_select'):
         try:
-            ival = int(new_value)
+            val_int = int(new_value)
         except ValueError:
             return False, f"'{new_value}' is not a valid integer."
         # range check
         if 'range' in desc:
             mn, mx = parse_range(desc['range'])
             if mn is not None and mx is not None:
-                if not (mn <= ival <= mx):
+                if not (mn <= val_int <= mx):
                     return False, f"Value must be in {mn}-{mx}."
     elif ptype == 'toggle01':
         if new_value not in ['0','1']:
@@ -171,10 +167,9 @@ def validate_value(section, param, new_value, descriptor, config):
         valid_ports = [x.strip() for x in desc.get('valid_ports','').split(',') if x.strip()]
         allow_port_custom = desc.get('allow_custom_port','false').lower() == 'true'
         try:
-            int_port = int(port_str)
+            int(port_str)
         except ValueError:
             return False, f"Port '{port_str}' is not a valid integer."
-
         if port_str not in valid_ports and not allow_port_custom and valid_ports:
             return False, f"Port '{port_str}' not in {valid_ports}."
     elif ptype == 'string_select':
@@ -183,14 +178,14 @@ def validate_value(section, param, new_value, descriptor, config):
         if valid_opts and new_value not in valid_opts and not allow_custom:
             return False, f"'{new_value}' not in {valid_opts}."
 
-    # Additional 'valid_options' check for unknown type
+    # extra valid_options check for unknown types
     if 'valid_options' in desc and ptype not in (
         'multi_select','ip_port_combo','string_select','integer_select'):
         valid_list = [v.strip() for v in desc['valid_options'].split(',') if v.strip()]
         if new_value not in valid_list:
             return False, f"'{new_value}' not in {valid_list}."
 
-    # Cross-field constraints
+    # cross-field constraint
     if 'constraint' in desc:
         ok, err = validate_constraint(new_value, desc['constraint'], section, param, config, descriptor)
         if not ok:
@@ -200,7 +195,7 @@ def validate_value(section, param, new_value, descriptor, config):
 
 def show_error(stdscr, msg):
     """
-    Show an error message and wait for one key press.
+    Show an error message and wait for key press.
     """
     max_y, max_x = stdscr.getmaxyx()
     stdscr.clear()
@@ -212,16 +207,13 @@ def show_error(stdscr, msg):
     stdscr.getch()
 
 def handle_resize(stdscr):
-    """Handle screen resize event by clearing and re-drawing or resetting layout if needed."""
     curses.update_lines_cols()
     stdscr.clear()
     stdscr.refresh()
 
 def confirm_dialog(stdscr, message):
     """
-    Display a simple "Are you sure?"-style message, with instructions:
-      LEFT => Cancel (False)
-      RIGHT => Confirm (True)
+    Simple left=cancel, right=confirm dialog
     """
     max_y, max_x = stdscr.getmaxyx()
     stdscr.clear()
@@ -241,79 +233,79 @@ def confirm_dialog(stdscr, message):
         elif key == curses.KEY_RIGHT:
             return True
 
-def show_script_output(stdscr, stdout_str, stderr_str):
+def draw_live_output(stdscr, lines):
     """
-    Show the combined stdout/stderr from the script in a scrollable manner if needed,
-    then prompt for a key press to continue.
+    Display lines, auto-scrolling, with a note at bottom.
     """
-    max_y, max_x = stdscr.getmaxyx()
     stdscr.clear()
+    max_y, max_x = stdscr.getmaxyx()
+    lines_per_screen = max_y - 2
 
-    # Combine output for display
-    combined = []
-    if stdout_str.strip():
-        combined.append("STDOUT:")
-        combined.extend(stdout_str.splitlines())
-    if stderr_str.strip():
-        combined.append("")
-        combined.append("STDERR:")
-        combined.extend(stderr_str.splitlines())
-    if not stdout_str.strip() and not stderr_str.strip():
-        combined.append("(No output)")
+    info_line = "[Streaming gs_bind.sh output - Ctrl+C to abort]"
+    stdscr.addstr(max_y - 1, 0, info_line[:max_x - 1])
 
-    # We'll do a simple paginated display:
+    start_index = max(0, len(lines) - lines_per_screen)
+    visible = lines[start_index:]
+
+    for i, ln in enumerate(visible):
+        if i >= lines_per_screen:
+            break
+        truncated = ln[:max_x - 1]
+        stdscr.addstr(i, 0, truncated)
+
+    stdscr.refresh()
+
+def scrollable_output_view(stdscr, lines):
+    """
+    Let the user scroll through all lines with up/down, press left/right to exit.
+    """
     line_idx = 0
     while True:
         stdscr.clear()
-        # Print a page's worth of lines
-        last_printed = 0
-        for row in range(max_y - 2):
+        max_y, max_x = stdscr.getmaxyx()
+        lines_per_page = max_y - 2
+
+        last_line = line_idx + lines_per_page
+        for row in range(lines_per_page):
             real_idx = line_idx + row
-            if real_idx >= len(combined):
+            if real_idx >= len(lines):
                 break
-            line = combined[real_idx]
-            stdscr.addstr(row, 0, line[:max_x-1])
-            last_printed = row
-        stdscr.addstr(max_y-2, 0,
-                      f"Lines {line_idx+1}-{line_idx+last_printed+1} of {len(combined)}")
-        stdscr.addstr(max_y-1, 0, "Use UP/DOWN to scroll, RIGHT/LEFT to exit.")
+            truncated = lines[real_idx][:max_x - 1]
+            stdscr.addstr(row, 0, truncated)
+
+        status_text = f"Lines {line_idx+1}-{min(last_line, len(lines))} of {len(lines)}"
+        stdscr.addstr(max_y - 2, 0, status_text[:max_x - 1])
+        stdscr.addstr(max_y - 1, 0, "[UP/DOWN to scroll, LEFT/RIGHT to return to menu]")
         stdscr.refresh()
 
         key = stdscr.getch()
-        if key == curses.KEY_UP:
-            line_idx = max(0, line_idx-1)
-        elif key == curses.KEY_DOWN:
-            if line_idx + (max_y - 2) < len(combined):
-                line_idx += 1
-        elif key == curses.KEY_RIGHT or key == curses.KEY_LEFT:
-            break
-        elif key == curses.KEY_RESIZE:
+        if key == curses.KEY_RESIZE:
             handle_resize(stdscr)
-            # On resize, reset to top
             line_idx = 0
+            continue
+        elif key == curses.KEY_UP:
+            line_idx = max(0, line_idx - 1)
+        elif key == curses.KEY_DOWN:
+            if last_line < len(lines):
+                line_idx += 1
+        elif key in (curses.KEY_LEFT, curses.KEY_RIGHT):
+            return
 
 def run_bind_protocol(stdscr, config):
     """
-    1) Confirm
-    2) Validate tx_wlan (wlans->tx_wlan) + bind_data_folder (common->bind_data_folder)
-    3) If valid, save config + run gs_bind.sh with the first tokens
-    4) Show output
-    5) Return to menu
+    Confirm, run ./gs_bind.sh in streaming mode, then scroll the final output.
     """
-    # 1) Confirm
     sure = confirm_dialog(
         stdscr,
         "Are you REALLY sure you want to initiate bind protocol with current settings?\n\n"
         "LEFT=Cancel   RIGHT=Proceed"
     )
     if not sure:
-        return  # user canceled
+        return
 
-    # 2) Extract first tokens from tx_wlan and bind_data_folder
     tx_wlan_val = config.get('wlans', 'tx_wlan', fallback="").strip()
     bind_folder_val = config.get('common', 'bind_data_folder', fallback="").strip()
 
-    # if either is empty or no tokens => error
     if not tx_wlan_val:
         show_error(stdscr, "wlans.tx_wlan is empty! Cannot bind.")
         return
@@ -324,69 +316,83 @@ def run_bind_protocol(stdscr, config):
     tx_wlan_first = tx_wlan_val.split()[0]
     bind_folder_first = bind_folder_val.split()[0]
 
-    # 3) Save current config
+    # Save config
     write_config(config)
 
-    # 4) Run the bind script with 2 args
+    # Clear and prepare
+    stdscr.clear()
+    stdscr.refresh()
+    curses.curs_set(0)
+
+    output_lines = []
+
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             ["./gs_bind.sh", tx_wlan_first, bind_folder_first],
-            capture_output=True, text=True
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
         )
     except Exception as e:
         show_error(stdscr, f"Failed to run ./gs_bind.sh:\n{e}")
         return
 
-    # 5) Display the output from script
-    stdout_str = result.stdout
-    stderr_str = result.stderr
-    show_script_output(stdscr, stdout_str, stderr_str)
-    # user then returns to main menu
+    # PHASE 1: Read lines in real-time until the process exits
+    while True:
+        line = proc.stdout.readline()
+        if line == '':
+            # No data => check if process ended
+            rc = proc.poll()
+            if rc is not None:
+                # child ended
+                break
+            # else keep looping, waiting for more data
+        else:
+            output_lines.append(line.rstrip('\n'))
+            draw_live_output(stdscr, output_lines)
+
+    # PHASE 2: final read to ensure any leftover data is captured
+    # if the child ended but had unflushed data, we pick it up here:
+    leftover = proc.stdout.read()
+    if leftover:
+        # split into lines
+        for ln in leftover.splitlines():
+            output_lines.append(ln)
+        draw_live_output(stdscr, output_lines)
+
+    # Now script is fully done, let user scroll the final output
+    scrollable_output_view(stdscr, output_lines)
 
 def curses_main(stdscr, original_config, descriptor):
-    """
-    Return a tuple: (config_or_None, action_string)
-    Where action_string can be:
-      - "steamfpv"  => means "Save and start SteamFPV"
-      - "debug"     => means "Save & exit to debug"
-      - "exit"      => means "Exit with current config" (discard)
-      or None if user didn't pick a special action
-    """
     current_config = copy_config(original_config)
 
     curses.curs_set(0)
     stdscr.keypad(True)
 
     sections = list(current_config.sections())
-
-    # Main menu with the new special bind item at the very end:
     menu_items = sections + [
         SPECIAL_SAVE_STEAMFPV,
-        # SPECIAL_SAVE_DEBUG,  # if you want to re-enable
+        # SPECIAL_SAVE_DEBUG,
         SPECIAL_EXIT_CURRENT,
-        SPECIAL_SAVE_BIND  # <-- appended last
+        SPECIAL_SAVE_BIND
     ]
     idx = 0
 
     while True:
-        # FULL CLEAR to remove any old submenu text
         stdscr.clear()
-
-        # Re-draw ASCII banner at top
         max_y, max_x = stdscr.getmaxyx()
         print_banner(stdscr, max_y, max_x)
 
         instructions = "Use D-Pad: UP/DOWN/LEFT/RIGHT. (Right=Select, Ctrl+C=Exit)"
         if len(instructions) > max_x - 1:
             instructions = instructions[:max_x - 1]
-        # Place instructions below banner, e.g. row 12
         row_instruct = 12
         if row_instruct < max_y:
             stdscr.move(row_instruct, 0)
             stdscr.clrtoeol()
             stdscr.addstr(row_instruct, 0, instructions)
 
-        # Print main menu items starting from row 14
         row_start = 14
         for row in range(row_start, max_y):
             stdscr.move(row, 0)
@@ -401,7 +407,7 @@ def curses_main(stdscr, original_config, descriptor):
             if len(line) > max_x - 1:
                 line = line[:max_x - 1]
 
-            # If it's the "Save and bind drone" item, use orange-ish color:
+            # highlight "Save and bind drone" in orange/yellow
             if item == SPECIAL_SAVE_BIND:
                 stdscr.attron(curses.color_pair(2))
                 stdscr.addstr(row, 0, line)
@@ -423,32 +429,22 @@ def curses_main(stdscr, original_config, descriptor):
         elif key == curses.KEY_RIGHT:
             chosen = menu_items[idx]
             if chosen == SPECIAL_SAVE_STEAMFPV:
-                # Example tweak: set "daemon" = false
                 if "common" in current_config:
                     current_config["common"]["daemon"] = "false"
                 return (current_config, "steamfpv")
-
             elif chosen == SPECIAL_SAVE_DEBUG:
-                # Another example tweak
                 if "common" in current_config:
                     current_config["common"]["daemon"] = "false"
                 return (current_config, "debug")
-
             elif chosen == SPECIAL_EXIT_CURRENT:
-                # discard changes
                 return (None, "exit")
-
             elif chosen == SPECIAL_SAVE_BIND:
-                # Perform "Save and bind drone" flow
                 run_bind_protocol(stdscr, current_config)
-                # After returning from run_bind_protocol, user sees main menu again
-                pass
-
             else:
-                # It's a section name => edit that section
                 edit_section(stdscr, current_config, descriptor, chosen)
+
         elif key == curses.KEY_LEFT:
-            # do nothing at top-level
+            # do nothing
             pass
 
 def edit_section(stdscr, config, descriptor, section):
@@ -476,7 +472,6 @@ def edit_section(stdscr, config, descriptor, section):
 
         stdscr.refresh()
         key = stdscr.getch()
-
         if key == curses.KEY_RESIZE:
             handle_resize(stdscr)
             continue
@@ -561,11 +556,6 @@ def multi_select_menu(stdscr, valid_opts, selected_set, allow_custom):
     menu_items.append("[Done]")
     idx = 0
 
-    def is_selected(opt):
-        if opt == "<EMPTY>":
-            return (len(selected_set) == 0)
-        return opt in selected_set
-
     while True:
         max_y, max_x = stdscr.getmaxyx()
         stdscr.clear()
@@ -576,8 +566,9 @@ def multi_select_menu(stdscr, valid_opts, selected_set, allow_custom):
             row = 2 + i
             if row >= max_y:
                 break
+
             if opt == "<EMPTY>":
-                mark = "[x]" if (len(selected_set) == 0) else "[ ]"
+                mark = "[x]" if len(selected_set) == 0 else "[ ]"
             elif opt in selected_set:
                 mark = "[x]"
             elif opt.startswith("["):
@@ -593,7 +584,6 @@ def multi_select_menu(stdscr, valid_opts, selected_set, allow_custom):
 
         stdscr.refresh()
         key = stdscr.getch()
-
         if key == curses.KEY_RESIZE:
             handle_resize(stdscr)
             continue
@@ -702,7 +692,6 @@ def single_select_menu(stdscr, valid_list, current_val, allow_custom, is_int=Fal
 
         stdscr.refresh()
         key = stdscr.getch()
-
         if key == curses.KEY_RESIZE:
             handle_resize(stdscr)
             continue
@@ -752,11 +741,9 @@ def ip_port_combo_input(stdscr, current_val, desc):
         ip_str, port_str = current_val.split(':',1)
         ip_str, port_str = ip_str.strip(), port_str.strip()
 
-    # First choose IP
     new_ip = single_select_menu(stdscr, valid_ips, ip_str, allow_ip_custom, is_int=False)
     if new_ip is None:
         return None
-    # Then choose port
     new_port = single_select_menu(stdscr, valid_ports, port_str, allow_port_custom, is_int=True)
     if new_port is None:
         return None
@@ -782,7 +769,6 @@ def free_text_input(stdscr, current_val):
         win_width = 1
     win = curses.newwin(1, win_width, 3, len(prompt)+1)
     user_input = []
-    pos = 0
 
     while True:
         key = stdscr.getch()
@@ -799,39 +785,31 @@ def free_text_input(stdscr, current_val):
         elif key in [curses.KEY_BACKSPACE, 127]:
             if user_input:
                 user_input.pop()
-                pos -= 1
                 win.clear()
                 win.addstr(0, 0, "".join(user_input))
                 stdscr.refresh()
         else:
             c = chr(key)
             user_input.append(c)
-            pos += 1
             win.clear()
             win.addstr(0, 0, "".join(user_input))
             stdscr.refresh()
 
 def run_curses_app(original_config, descriptor):
-    """
-    We wrap curses_main in try/except to handle Ctrl+C gracefully.
-    Return (config_or_None, action_str).
-    """
     try:
         return curses.wrapper(curses_main, original_config, descriptor)
     except KeyboardInterrupt:
         print("\nUser pressed Ctrl+C. Exiting gracefully (no changes saved).")
         return (None, "exit")
-    except Exception as e:
+    except Exception:
         traceback.print_exc()
         return (None, "exit")
 
 def main():
     print("HELLO: If you see this, the script is running at all!")
-    # Check descriptor
     if not os.path.exists(DESCRIPTOR_FILE):
         print(f"Descriptor '{DESCRIPTOR_FILE}' not found.")
         return
-    # Check config
     if not os.path.exists(CONFIG_FILE):
         print(f"Config file '{CONFIG_FILE}' not found.")
         return
@@ -840,14 +818,13 @@ def main():
     descriptor = load_descriptor()
 
     final_config, action = run_curses_app(original_config, descriptor)
-
     if final_config is None:
         print("Exited without saving (or was interrupted). No changes applied.")
         return
 
-    # In normal scenarios (SteamFPV, debug, etc.) we finalize the config:
     write_config(final_config)
     print("Saved config to disk.")
 
 if __name__ == "__main__":
     main()
+

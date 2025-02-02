@@ -15,14 +15,19 @@
 #define DEFAULT_SERVER_IP "10.5.99.2"
 #define DEFAULT_SERVER_PORT 5555
 #define BUFFER_SIZE 8192
-#define OUTPUT_DIR "/tmp/bind"
-#define OUTPUT_FILE "/tmp/bind/bind.tar.gz"
 #define DEFAULT_LISTEN_DURATION 60  // seconds
+
+// Define directories and file paths for BIND and FLASH commands.
+#define BIND_DIR "/tmp/bind"
+#define BIND_FILE "/tmp/bind/bind.tar.gz"
+#define FLASH_DIR "/tmp/flash"
+#define FLASH_FILE "/tmp/flash/flash.tar.gz"
 
 // Exit code definitions.
 #define EXIT_ERR    1
 #define EXIT_BIND   2
 #define EXIT_UNBIND 3
+#define EXIT_FLASH  4
 
 // Global flag for debug output.
 static int debug_enabled = 0;
@@ -54,30 +59,49 @@ void print_help() {
     fprintf(stderr, "  --help                  Show this help message\n");
 }
 
-// Ensure that the output directory exists.
-void ensure_output_directory() {
+// Ensure that a directory exists.
+void ensure_directory(const char *dir) {
     struct stat st = {0};
-    if (stat(OUTPUT_DIR, &st) == -1) {
-        if (mkdir(OUTPUT_DIR, 0777) != 0) {
-            perror("Failed to create output directory");
+    if (stat(dir, &st) == -1) {
+        if (mkdir(dir, 0777) != 0) {
+            fprintf(stderr, "ERR\tFailed to create directory: %s\n", dir);
             exit(EXIT_ERR);
         }
     }
 }
 
-// Base64 decode the input string and write the decoded data to OUTPUT_FILE.
+// Read entire file into a dynamically allocated string.
+char *read_file(const char *filename) {
+    FILE *fp = fopen(filename, "r");
+    if (!fp) {
+        return strdup("Failed to read file");
+    }
+    fseek(fp, 0, SEEK_END);
+    long fsize = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    char *buffer = malloc(fsize + 1);
+    if (!buffer) {
+        fclose(fp);
+        return strdup("Memory allocation error");
+    }
+    fread(buffer, 1, fsize, fp);
+    fclose(fp);
+    buffer[fsize] = '\0';
+    return buffer;
+}
+
+// Base64 decode the input string and write the decoded data to a specified file.
 // Returns 0 on success, nonzero on error.
-int base64_decode_and_save(const char *input, size_t input_length) {
-    FILE *output_file = fopen(OUTPUT_FILE, "wb");
+int base64_decode_and_save_to(const char *input, size_t input_length, const char *dir, const char *file) {
+    ensure_directory(dir);
+    FILE *output_file = fopen(file, "wb");
     if (!output_file) {
-        fprintf(stderr, "ERR\tFailed to open output file\n");
+        fprintf(stderr, "ERR\tFailed to open output file: %s\n", file);
         return 1;
     }
-
     unsigned char decode_buffer[BUFFER_SIZE];
     int val = 0, valb = -8;
     size_t out_len = 0;
-
     for (size_t i = 0; i < input_length; i++) {
         char c = input[i];
         if (c == '=' || c == '\n' || c == '\r')
@@ -99,7 +123,6 @@ int base64_decode_and_save(const char *input, size_t input_length) {
     if (out_len > 0) {
         fwrite(decode_buffer, 1, out_len, output_file);
     }
-
     fclose(output_file);
     return 0;
 }
@@ -181,14 +204,14 @@ typedef int (*command_handler)(const char *arg, FILE *client_file, int force_lis
 
 // VERSION: reply with version info.
 int cmd_version(const char *arg, FILE *client_file, int force_listen) {
-    (void)arg; // unused
+    (void)arg;
     (void)force_listen;
     fprintf(client_file, "OK\tOpenIPC bind v0.1\n");
     fflush(client_file);
     return 0;
 }
 
-// BIND: decode base64 input and save to file.
+// BIND: decode base64 input and save to BIND_FILE.
 int cmd_bind(const char *arg, FILE *client_file, int force_listen) {
     if (arg == NULL || strlen(arg) == 0) {
         fprintf(client_file, "ERR\tMissing argument for BIND command\n");
@@ -196,13 +219,33 @@ int cmd_bind(const char *arg, FILE *client_file, int force_listen) {
         return 0;
     }
     debug_print("Received BIND command with base64 length: %zu\n", strlen(arg));
-    if (base64_decode_and_save(arg, strlen(arg)) == 0) {
+    if (base64_decode_and_save_to(arg, strlen(arg), BIND_DIR, BIND_FILE) == 0) {
         fprintf(client_file, "OK\n");
         fflush(client_file);
         if (!force_listen)
             return EXIT_BIND;
     } else {
-        fprintf(client_file, "ERR\tFailed to process data\n");
+        fprintf(client_file, "ERR\tFailed to process data for BIND\n");
+        fflush(client_file);
+    }
+    return 0;
+}
+
+// FLASH: decode base64 input and save to FLASH_FILE.
+int cmd_flash(const char *arg, FILE *client_file, int force_listen) {
+    if (arg == NULL || strlen(arg) == 0) {
+        fprintf(client_file, "ERR\tMissing argument for FLASH command\n");
+        fflush(client_file);
+        return 0;
+    }
+    debug_print("Received FLASH command with base64 length: %zu\n", strlen(arg));
+    if (base64_decode_and_save_to(arg, strlen(arg), FLASH_DIR, FLASH_FILE) == 0) {
+        fprintf(client_file, "OK\n");
+        fflush(client_file);
+        if (!force_listen)
+            return EXIT_FLASH;
+    } else {
+        fprintf(client_file, "ERR\tFailed to process data for FLASH\n");
         fflush(client_file);
     }
     return 0;
@@ -210,7 +253,7 @@ int cmd_bind(const char *arg, FILE *client_file, int force_listen) {
 
 // UNBIND: execute the system command "firstboot".
 int cmd_unbind(const char *arg, FILE *client_file, int force_listen) {
-    (void)arg; // no argument needed
+    (void)arg;
     debug_print("Received UNBIND command\n");
     int ret = system("firstboot");
     if (ret == -1) {
@@ -227,14 +270,15 @@ int cmd_unbind(const char *arg, FILE *client_file, int force_listen) {
     return 0;
 }
 
-// INFO: execute "ipcinfo -cfvlFtixSV" and "lsusb", concatenate their output and send back.
-// To keep the reply in a single line (like VERSION), we replace newline characters with spaces.
+// INFO: execute "ipcinfo -cfvlFtixSV" and "lsusb", and also include /etc/os-release.
+// All outputs are cleaned (newlines replaced with spaces) and concatenated into one line.
 int cmd_info(const char *arg, FILE *client_file, int force_listen) {
-    (void)arg; // no argument needed
+    (void)arg;
     debug_print("Received INFO command\n");
     
     char *ipcinfo_out = execute_command("ipcinfo -cfvlFtixSV");
     char *lsusb_out = execute_command("lsusb");
+    char *osrelease_out = read_file("/etc/os-release");
 
     if (!ipcinfo_out) {
         ipcinfo_out = strdup("Failed to execute ipcinfo command");
@@ -242,15 +286,19 @@ int cmd_info(const char *arg, FILE *client_file, int force_listen) {
     if (!lsusb_out) {
         lsusb_out = strdup("Failed to execute lsusb command");
     }
+    if (!osrelease_out) {
+        osrelease_out = strdup("Failed to read /etc/os-release");
+    }
     
     // Remove newline characters so the reply is a single line.
     char *ipcinfo_clean = remove_newlines(ipcinfo_out);
     char *lsusb_clean = remove_newlines(lsusb_out);
+    char *osrelease_clean = remove_newlines(osrelease_out);
     
-    size_t resp_size = strlen(ipcinfo_clean) + strlen(lsusb_clean) + 64;
+    size_t resp_size = strlen(ipcinfo_clean) + strlen(lsusb_clean) + strlen(osrelease_clean) + 96;
     char *response = malloc(resp_size);
     if (response) {
-        snprintf(response, resp_size, "%s | %s", ipcinfo_clean, lsusb_clean);
+        snprintf(response, resp_size, "%s | %s | %s", ipcinfo_clean, lsusb_clean, osrelease_clean);
         fprintf(client_file, "OK\t%s\n", response);
         free(response);
     } else {
@@ -258,8 +306,10 @@ int cmd_info(const char *arg, FILE *client_file, int force_listen) {
     }
     free(ipcinfo_clean);
     free(lsusb_clean);
+    free(osrelease_clean);
     free(ipcinfo_out);
     free(lsusb_out);
+    free(osrelease_out);
     fflush(client_file);
     return 0;
 }
@@ -276,6 +326,7 @@ typedef struct {
 command_entry commands[] = {
     { "VERSION", cmd_version },
     { "BIND",    cmd_bind    },
+    { "FLASH",   cmd_flash   },
     { "UNBIND",  cmd_unbind  },
     { "INFO",    cmd_info    },
     { NULL,      NULL        }  // Sentinel
@@ -307,7 +358,7 @@ int main(int argc, char *argv[]) {
     int listen_duration = DEFAULT_LISTEN_DURATION;
     char server_ip[INET_ADDRSTRLEN] = DEFAULT_SERVER_IP;
     int server_port = DEFAULT_SERVER_PORT;
-    int force_listen = 0;  // Default: terminate on a successful BIND/UNBIND.
+    int force_listen = 0;  // Default: terminate on a successful terminating command.
     
     // exit_code will be set if a command requests termination.
     int exit_code = 0;   
@@ -342,7 +393,10 @@ int main(int argc, char *argv[]) {
     }
 
     fprintf(stderr, "INFO\tStarting server on %s:%d for %d seconds\n", server_ip, server_port, listen_duration);
-    ensure_output_directory();
+    
+    // Ensure directories for BIND and FLASH exist.
+    ensure_directory(BIND_DIR);
+    ensure_directory(FLASH_DIR);
 
     // Create socket.
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
@@ -451,7 +505,6 @@ int main(int argc, char *argv[]) {
             if (sep != NULL) {
                 *sep = '\0';
                 arg = sep + 1;
-                // Skip additional whitespace.
                 while (*arg == ' ' || *arg == '\t')
                     arg++;
                 if (*arg == '\0')

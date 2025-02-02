@@ -11,6 +11,7 @@
 #include <time.h>
 #include <stdarg.h>
 #include <sys/wait.h>
+#include <stdint.h>
 
 #define DEFAULT_SERVER_IP "10.5.99.2"
 #define DEFAULT_SERVER_PORT 5555
@@ -190,6 +191,38 @@ char *remove_newlines(const char *input) {
     return output;
 }
 
+/*
+ * Base64 encode a given binary buffer.
+ * This implementation encodes data in complete 3-byte blocks and adds proper "=" padding.
+ * The returned string is null-terminated in memory for convenience, but the caller should
+ * send only the exact number of characters (as determined by strlen) to avoid transmitting
+ * the terminating null.
+ */
+char *base64_encode(const unsigned char *data, size_t input_length) {
+    static const char encoding_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    static const int mod_table[] = {0, 2, 1};
+    size_t output_length = 4 * ((input_length + 2) / 3);
+    char *encoded_data = malloc(output_length + 1);
+    if (!encoded_data)
+        return NULL;
+    size_t i, j;
+    for (i = 0, j = 0; i < input_length;) {
+        uint32_t octet_a = i < input_length ? data[i++] : 0;
+        uint32_t octet_b = i < input_length ? data[i++] : 0;
+        uint32_t octet_c = i < input_length ? data[i++] : 0;
+        uint32_t triple = (octet_a << 16) | (octet_b << 8) | (octet_c);
+        encoded_data[j++] = encoding_table[(triple >> 18) & 0x3F];
+        encoded_data[j++] = encoding_table[(triple >> 12) & 0x3F];
+        encoded_data[j++] = encoding_table[(triple >> 6) & 0x3F];
+        encoded_data[j++] = encoding_table[triple & 0x3F];
+    }
+    for (i = 0; i < mod_table[input_length % 3]; i++) {
+        encoded_data[output_length - 1 - i] = '=';
+    }
+    encoded_data[output_length] = '\0';
+    return encoded_data;
+}
+
 /*--------------------------------------------------
  * Command Handler Declarations
  *--------------------------------------------------*/
@@ -270,14 +303,16 @@ int cmd_unbind(const char *arg, FILE *client_file, int force_listen) {
     return 0;
 }
 
-// INFO: execute "ipcinfo -cfvlFtixSV" and "lsusb", and also include /etc/os-release.
-// All outputs are cleaned (newlines replaced with spaces) and concatenated into one line.
+// INFO: execute "ipcinfo -cfvlFtixSV", "lsusb", and read "/etc/os-release".
+// Clean outputs by replacing newlines with spaces, concatenate them,
+// encode the result in Base64, and then send the encoded string (without extra null bytes).
 int cmd_info(const char *arg, FILE *client_file, int force_listen) {
     (void)arg;
     debug_print("Received INFO command\n");
     
-    char *ipcinfo_out = execute_command("ipcinfo -cfvlFtixSV");
-    char *lsusb_out = execute_command("lsusb");
+    // Capture both stdout and stderr.
+    char *ipcinfo_out = execute_command("ipcinfo -cfvlFtixSV 2>&1");
+    char *lsusb_out = execute_command("lsusb 2>&1");
     char *osrelease_out = read_file("/etc/os-release");
 
     if (!ipcinfo_out) {
@@ -290,20 +325,53 @@ int cmd_info(const char *arg, FILE *client_file, int force_listen) {
         osrelease_out = strdup("Failed to read /etc/os-release");
     }
     
-    // Remove newline characters so the reply is a single line.
+    if (debug_enabled) {
+        debug_print("Raw ipcinfo: '%s'\n", ipcinfo_out);
+        debug_print("Raw lsusb: '%s'\n", lsusb_out);
+        debug_print("Raw os-release: '%s'\n", osrelease_out);
+    }
+    
+    // Remove newline characters.
     char *ipcinfo_clean = remove_newlines(ipcinfo_out);
     char *lsusb_clean = remove_newlines(lsusb_out);
     char *osrelease_clean = remove_newlines(osrelease_out);
+    
+    if (debug_enabled) {
+        debug_print("Clean ipcinfo: '%s'\n", ipcinfo_clean);
+        debug_print("Clean lsusb: '%s'\n", lsusb_clean);
+        debug_print("Clean os-release: '%s'\n", osrelease_clean);
+    }
     
     size_t resp_size = strlen(ipcinfo_clean) + strlen(lsusb_clean) + strlen(osrelease_clean) + 96;
     char *response = malloc(resp_size);
     if (response) {
         snprintf(response, resp_size, "%s | %s | %s", ipcinfo_clean, lsusb_clean, osrelease_clean);
-        fprintf(client_file, "OK\t%s\n", response);
-        free(response);
     } else {
         fprintf(client_file, "ERR\tMemory allocation error\n");
+        free(ipcinfo_clean); free(lsusb_clean); free(osrelease_clean);
+        free(ipcinfo_out); free(lsusb_out); free(osrelease_out);
+        fflush(client_file);
+        return 0;
     }
+    
+    if (debug_enabled) {
+        debug_print("Concatenated response: '%s'\n", response);
+    }
+    
+    // Base64-encode the concatenated response.
+    char *encoded_response = base64_encode((unsigned char*)response, strlen(response));
+    if (encoded_response) {
+        size_t enc_len = strlen(encoded_response);
+        fprintf(client_file, "OK\t");
+        // Write exactly the encoded data (without transmitting the terminating null)
+        fwrite(encoded_response, 1, enc_len, client_file);
+        fprintf(client_file, "\n");
+        free(encoded_response);
+    } else {
+        fprintf(client_file, "ERR\tFailed to encode response\n");
+    }
+    
+    free(response);
     free(ipcinfo_clean);
     free(lsusb_clean);
     free(osrelease_clean);
@@ -360,7 +428,6 @@ int main(int argc, char *argv[]) {
     int server_port = DEFAULT_SERVER_PORT;
     int force_listen = 0;  // Default: terminate on a successful terminating command.
     
-    // exit_code will be set if a command requests termination.
     int exit_code = 0;   
     int command_terminated = 0;
 
@@ -398,13 +465,11 @@ int main(int argc, char *argv[]) {
     ensure_directory(BIND_DIR);
     ensure_directory(FLASH_DIR);
 
-    // Create socket.
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
         perror("Socket creation failed");
         exit(EXIT_ERR);
     }
 
-    // Allow immediate reuse of the address/port.
     int opt = 1;
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
         perror("setsockopt(SO_REUSEADDR) failed");
@@ -412,7 +477,6 @@ int main(int argc, char *argv[]) {
         exit(EXIT_ERR);
     }
 
-    // Set the listening socket to non-blocking.
     int flags = fcntl(server_fd, F_GETFL, 0);
     if (flags == -1) {
         perror("fcntl(F_GETFL) failed");
@@ -425,7 +489,6 @@ int main(int argc, char *argv[]) {
         exit(EXIT_ERR);
     }
 
-    // Bind.
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = inet_addr(server_ip);
@@ -436,18 +499,15 @@ int main(int argc, char *argv[]) {
         exit(EXIT_ERR);
     }
 
-    // Listen.
     if (listen(server_fd, 5) == -1) {
         perror("Listening failed");
         close(server_fd);
         exit(EXIT_ERR);
     }
 
-    // Start the timer.
     struct timespec start_time;
     clock_gettime(CLOCK_MONOTONIC, &start_time);
 
-    // Main loop: accept clients until listen_duration expires or a command terminates the server.
     while (1) {
         double diff = elapsed_time_sec(&start_time);
         if (diff >= listen_duration) {
@@ -462,7 +522,7 @@ int main(int argc, char *argv[]) {
         int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_addr_len);
         if (client_fd == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                usleep(100000); // 0.1 second
+                usleep(100000);
                 continue;
             } else {
                 perror("Accept failed");
@@ -472,7 +532,6 @@ int main(int argc, char *argv[]) {
         }
         fprintf(stderr, "INFO\tClient connected\n");
 
-        // Set accepted socket to blocking mode.
         {
             int client_flags = fcntl(client_fd, F_GETFL, 0);
             if (client_flags != -1) {
@@ -481,7 +540,6 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // Wrap the accepted socket with a FILE* stream for line-based I/O.
         FILE *client_file = fdopen(client_fd, "r+");
         if (!client_file) {
             perror("fdopen failed");
@@ -491,14 +549,11 @@ int main(int argc, char *argv[]) {
 
         char *line = NULL;
         size_t linecap = 0;
-        // Process commands from this client.
         while (getline(&line, &linecap, client_file) != -1) {
-            // Remove trailing newline.
             size_t len = strlen(line);
             if (len > 0 && line[len - 1] == '\n')
                 line[len - 1] = '\0';
 
-            // Split the input into a command and an optional argument.
             char *cmd = line;
             char *arg = NULL;
             char *sep = strpbrk(line, " \t");
@@ -511,7 +566,6 @@ int main(int argc, char *argv[]) {
                     arg = NULL;
             }
 
-            // Dispatch the command.
             int ret = handle_command(cmd, arg, client_file, force_listen);
             if (ret != 0) {
                 exit_code = ret;
@@ -528,8 +582,6 @@ int main(int argc, char *argv[]) {
     }
 
     close(server_fd);
-
-    // If no command requested termination (listen timeout), exit with 0.
     exit(exit_code);
 }
 

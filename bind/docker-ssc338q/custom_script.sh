@@ -9,7 +9,7 @@ output=$(wfb-cli -g .common.passphrase)
 if [ -n "$output" ]; then
   echo "Passphrase retrieved: $output"
   # Run the additional command here.
-  keypair $output
+  keygen $output
 else
   echo "No passphrase retrieved, please check the command."
   # Optionally run another command here.

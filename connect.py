@@ -195,7 +195,7 @@ def flash_operation(archive_file, args):
     """
     Perform the FLASH operation:
       - Verify the provided archive file exists.
-      - Read the tar.gz archive file, base64-encode its contents.
+      - Read the tar.gz archive file and base64-encode its contents.
       - Connect to the server.
       - Send the VERSION command and verify the response.
       - Send the FLASH command with the encoded archive.
@@ -273,6 +273,9 @@ def simple_command_operation(command, args):
     """
     Perform an operation that sends a single command (e.g. UNBIND or INFO)
     and waits for the response.
+    
+    For the INFO command, the response message (after the OK status) is expected
+    to be Base64 encoded. This function decodes it before printing.
     """
     host = args.ip
     port = args.port
@@ -292,8 +295,22 @@ def simple_command_operation(command, args):
             logging.error(f"Timeout occurred while waiting for response after sending {command}.")
             sys.exit(1)
         logging.debug(f"Received: {response_line}")
-        # Print the response for the user.
-        print(response_line)
+        
+        if command.upper() == "INFO":
+            parts = response_line.split('\t', 1)
+            status = parts[0]
+            if status == "OK" and len(parts) > 1:
+                encoded_msg = parts[1]
+                try:
+                    decoded_msg = base64.b64decode(encoded_msg).decode('utf-8')
+                    print(decoded_msg)
+                except Exception as e:
+                    logging.error("Failed to decode INFO response: " + str(e))
+                    print(response_line)
+            else:
+                print(response_line)
+        else:
+            print(response_line)
     finally:
         sock_file.close()
         sock.close()

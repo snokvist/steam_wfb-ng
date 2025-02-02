@@ -12,8 +12,14 @@ if [ -n "$output" ]; then
   keygen $output
 else
   echo "No passphrase retrieved, please check the command."
-  # Optionally run another command here.
-  cp etc/gs.key /etc/drone.key
+  #cp etc/gs.key /etc/drone.key
 fi
+
+
+if [ -f etc/rc.local ]; then
+  ehco "rc.local detected, copy to /etc/rc.local."
+  cp etc/rc.local /etc/rc.local
+fi
+
 
 exit 0

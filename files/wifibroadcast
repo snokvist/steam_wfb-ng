@@ -154,6 +154,13 @@ start_bind() {
 	# Handle exit codes
 	case $EXIT_CODE in
     	0)
+		echo "Listen period ended. Exiting."
+        ;;
+    	1)
+        	echo "Fatal errors."
+        	#exit 1
+        ;;
+    	2)
         	echo "File received and saved successfully. Continuing execution..."
         	                                                                                                                                                        
         	cd /tmp/bind                                                                                                                                                               
@@ -203,26 +210,10 @@ start_bind() {
 		#cleanup
 		rm -rf /tmp/bind
                                                                                                                              
-        	;;
-    	5)
-        	echo "No file received within time limit. Exiting gracefully."
-        	#exit 5
-        ;;
-    	1)
-        	echo "Fatal error: Socket creation or binding failed, or invalid listen duration argument. Exiting."
-        	#exit 1
-        ;;
-    	2)
-        	echo "Error: Base64 decoding failure. Exiting."
-        	#exit 2
         ;;
     	3)
-        	echo "Error: Invalid command format received. Exiting."
+        	echo "UNBIND command recieved: Exiting."
         	#exit 3
-        ;;
-    	4)
-        	echo "Error: Unknown command received. Exiting."
-        	#exit 4
         ;;
     	*)
         	echo "Unexpected error occurred. Exiting with code $EXIT_CODE."

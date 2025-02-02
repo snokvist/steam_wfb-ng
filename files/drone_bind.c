@@ -148,6 +148,25 @@ char *execute_command(const char *cmd) {
     return output;
 }
 
+/*
+ * Remove newline characters from input by replacing them with a space.
+ * Returns a newly allocated string which the caller must free.
+ */
+char *remove_newlines(const char *input) {
+    size_t len = strlen(input);
+    char *output = malloc(len + 1);
+    if (!output)
+        return NULL;
+    for (size_t i = 0; i < len; i++) {
+        if (input[i] == '\n' || input[i] == '\r')
+            output[i] = ' ';
+        else
+            output[i] = input[i];
+    }
+    output[len] = '\0';
+    return output;
+}
+
 /*--------------------------------------------------
  * Command Handler Declarations
  *--------------------------------------------------*/
@@ -163,6 +182,7 @@ typedef int (*command_handler)(const char *arg, FILE *client_file, int force_lis
 // VERSION: reply with version info.
 int cmd_version(const char *arg, FILE *client_file, int force_listen) {
     (void)arg; // unused
+    (void)force_listen;
     fprintf(client_file, "OK\tOpenIPC bind v0.1\n");
     fflush(client_file);
     return 0;
@@ -208,29 +228,36 @@ int cmd_unbind(const char *arg, FILE *client_file, int force_listen) {
 }
 
 // INFO: execute "ipcinfo -cfvlFtixSV" and "lsusb", concatenate their output and send back.
+// To keep the reply in a single line (like VERSION), we replace newline characters with spaces.
 int cmd_info(const char *arg, FILE *client_file, int force_listen) {
     (void)arg; // no argument needed
     debug_print("Received INFO command\n");
+    
     char *ipcinfo_out = execute_command("ipcinfo -cfvlFtixSV");
     char *lsusb_out = execute_command("lsusb");
 
     if (!ipcinfo_out) {
-        ipcinfo_out = strdup("Failed to execute ipcinfo command\n");
+        ipcinfo_out = strdup("Failed to execute ipcinfo command");
     }
     if (!lsusb_out) {
-        lsusb_out = strdup("Failed to execute lsusb command\n");
+        lsusb_out = strdup("Failed to execute lsusb command");
     }
-
-    // Dynamically allocate a buffer to hold both outputs.
-    size_t resp_size = strlen(ipcinfo_out) + strlen(lsusb_out) + 64;
+    
+    // Remove newline characters so the reply is a single line.
+    char *ipcinfo_clean = remove_newlines(ipcinfo_out);
+    char *lsusb_clean = remove_newlines(lsusb_out);
+    
+    size_t resp_size = strlen(ipcinfo_clean) + strlen(lsusb_clean) + 64;
     char *response = malloc(resp_size);
     if (response) {
-        snprintf(response, resp_size, "%s\n%s", ipcinfo_out, lsusb_out);
+        snprintf(response, resp_size, "%s | %s", ipcinfo_clean, lsusb_clean);
         fprintf(client_file, "OK\t%s\n", response);
         free(response);
     } else {
         fprintf(client_file, "ERR\tMemory allocation error\n");
     }
+    free(ipcinfo_clean);
+    free(lsusb_clean);
     free(ipcinfo_out);
     free(lsusb_out);
     fflush(client_file);
